@@ -4215,6 +4215,8 @@ Ciclic</text>
 <text x="77.47" y="-274.32" size="2.54" layer="97" font="vector" align="top-left">v1</text>
 <text x="77.47" y="-274.32" size="2.54" layer="94" font="vector" align="top-left">v1</text>
 <text x="6.35" y="-269.24" size="2.54" layer="94" font="vector" align="top-left">Renan R. Duarte</text>
+<text x="-290.83" y="-275.59" size="1.905" layer="94" font="vector" ratio="15" align="top-left">IC1 (ESP12E) must be configured in DIO SPI mode. To do this, desolder the metal shield,
+lift pins 3 and 7 of the SPI flash memory chip and connect these pins to pin 8 (3V3).</text>
 </plain>
 <instances>
 <instance part="IC1" gate="G$1" x="-180.34" y="-106.68" smashed="yes">
