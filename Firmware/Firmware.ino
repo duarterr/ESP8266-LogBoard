@@ -12,19 +12,20 @@
 //
 // Released into the public domain
 /* ------------------------------------------------------------------------------------------- */
-
-/* Init
- * Check for SD card -  N: Only Wifi, load last config from EEPROM
- *                      Y: Check for config file -  N: Load last from EEPROM
- *                                                  Y: Transfer to EEPROM, delete config file
- * Start wifi connection                                                  
- * Start peripherals
- * Sample data
- * Check wifi connection -  Y: Post data - Get result
- *                          N: Save to SD card if present
- * Check Vbat -   H: Sleep TIME_SAMPLE                          
- *                L: Sleep forever
- */
+//
+// Code workflow: 
+// (1) Init
+// (2) Check for SD card -  N: Only Wifi, load last config from EEPROM
+//                          Y: Check for new config file -  N: Load last from EEPROM
+//                                                          Y: Save to EEPROM, delete config file
+// (3) Start wifi connection                                                  
+// (4) Start peripherals
+// (5) Sample data
+// (6) Check wifi connection -  Y: Post data - Get result
+//                              N: Save to SD card if present
+// (7) Check Vbat -   Normal: Sleep TIME_SAMPLE                          
+//                    Low: Sleep forever
+/* ------------------------------------------------------------------------------------------- */
 
 /* ------------------------------------------------------------------------------------------- */
 // Libraries
@@ -47,6 +48,21 @@
 using namespace sdfat;
 
 /* ------------------------------------------------------------------------------------------- */
+// Hardware defines
+/* ------------------------------------------------------------------------------------------- */
+
+// Peripheral pins
+#define PIN_SD_CS               9
+#define PIN_SD_CD               4
+#define PIN_RTC_CS              10
+#define PIN_TS_CS               5
+#define PIN_LED                 2
+#define PIN_ADC                 A0
+
+// ADC gain
+#define ADC_GAIN                0.005311198
+
+/* ------------------------------------------------------------------------------------------- */
 // Software defines
 /* ------------------------------------------------------------------------------------------- */
 
@@ -66,21 +82,6 @@ using namespace sdfat;
 #define TIMEZONE                -3
 
 /* ------------------------------------------------------------------------------------------- */
-// Hardware defines
-/* ------------------------------------------------------------------------------------------- */
-
-// Peripheral pins
-#define PIN_SD_CS               9
-#define PIN_SD_CD               4
-#define PIN_RTC_CS              10
-#define PIN_TS_CS               5
-#define PIN_LED                 2
-#define PIN_ADC                 A0
-
-// ADC gain
-#define ADC_GAIN                0.005311198
-
-/* ------------------------------------------------------------------------------------------- */
 // Constructors
 /* ------------------------------------------------------------------------------------------- */
 
@@ -93,8 +94,11 @@ DS1390 RTC (PIN_RTC_CS);
 // SD card
 SdFat SD;
 
+// Configuration file
+File ConfigFile;
+
 // Log file
-File Log;
+File LogFile;
     
 // HTTP client
 HTTPClient LogClient;
@@ -103,8 +107,11 @@ HTTPClient LogClient;
 // Global variables
 /* ------------------------------------------------------------------------------------------- */
 
+// Configuration file
+const char* ConfigFilename = "Config.csv";
+
 // Log file
-const char* LogFile = "Log.csv";
+const char* LogFilename = "Log.csv";
     
 // Wifi settings
 const char* WifiSSID = "GEDRE Pos Graduacao";
@@ -132,31 +139,34 @@ char Buffer[200] = {0};
 // WiFi connection counter
 unsigned char ConnectionCounter = 0;
 
-/* ------------------------------------------------------------------------------------------- */
-// LED flash function
-/* ------------------------------------------------------------------------------------------- */
 
-void LED_Flash ()
-{
-  digitalWrite (PIN_LED, LOW);
-  delay(200);
-  digitalWrite (PIN_LED, HIGH);
-  delay(200);
-  digitalWrite (PIN_LED, LOW); 
-  delay(200);
-  digitalWrite (PIN_LED, HIGH);  
-}
+
+
+
+
+
+// Log flags
+bool LogToSD = false;
+bool LogToWifi = false;
+
+// Log success flags
+bool LogSDSuccess = false;
+bool LogWifiSuccess = false;
+
 
 /* ------------------------------------------------------------------------------------------- */
-// Initialization function
+// Name:        setup
+// Description: This function runs on boot
+// Arguments:   None
+// Returns:     None
 /* ------------------------------------------------------------------------------------------- */
 
 void setup() 
 {
-#if DEBUG_SERIAL
+  #if DEBUG_SERIAL
   Serial.begin(74880);
   while (!Serial);  
-#endif
+  #endif
 
   /* ----------------------------------------------------------------------------------------- */
 
@@ -168,44 +178,110 @@ void setup()
     
   /* ----------------------------------------------------------------------------------------- */ 
    
-#if DEBUG_SERIAL 
+  #if DEBUG_SERIAL 
   Serial.printf ("[%05d] ", millis());
   Serial.println("Initializing SD card...");
-#endif
+  #endif
 
   // Card detect pin
   pinMode(PIN_SD_CD, INPUT_PULLUP);
 
   // Check for SD card
-  if (digitalRead(PIN_SD_CD))
-  {
-#if DEBUG_SERIAL   
-    Serial.printf ("[%05d] ", millis());
-    Serial.println("SD card not detected!");
-#endif         
+  LogToSD = SDCardPresent();
 
-    // Call error function
-    RunOnError ();
+  // SD card was not detected
+  if (!LogToSD)
+  {
+    #if DEBUG_SERIAL   
+    Serial.printf ("[%05d] ", millis());
+    Serial.println("SD card not detected. Logging only via WiFi.");
+    #endif         
+
+    // Get configuration values from EEPROM
+    #if DEBUG_SERIAL     
+    Serial.printf ("[%05d] ", millis());
+    Serial.println("Getting last configuration from EEPROM..."); 
+    #endif   
   }
 
-  // Initialize SD card
-  if (!SD.begin(PIN_SD_CS)) 
+  // SD card was detected
+  else
   {
-#if DEBUG_SERIAL     
-    Serial.printf ("[%05d] ", millis());
-    Serial.println("Initialization failed!"); 
-#endif         
+    // Fails to initialize SD card
+    if (!SD.begin(PIN_SD_CS)) 
+    {
+       #if DEBUG_SERIAL     
+      Serial.printf ("[%05d] ", millis());
+      Serial.println("Initialization failed! Logging only via WiFi."); 
+      #endif   
 
-    // Call error function
-    RunOnError (); 
+      // Get configuration values from EEPROM
+      #if DEBUG_SERIAL     
+      Serial.printf ("[%05d] ", millis());
+      Serial.println("Getting last configuration from EEPROM..."); 
+      #endif         
+    }     
+
+    // SD card was initialized
+    else
+    {
+      #if DEBUG_SERIAL
+      Serial.printf ("[%05d] ", millis());
+      Serial.println("Done.");     
+      #endif       
+
+      // Open the config file
+      ConfigFile = SD.open (ConfigFilename, FILE_READ);
+    
+      // Configuration file not found
+      if (!LogFile) 
+      {
+        #if DEBUG_SERIAL
+        Serial.printf ("[%05d] ", millis());
+        Serial.println("Configuration file not found.");     
+        #endif                  
+        
+        // Get configuration values from EEPROM
+        #if DEBUG_SERIAL     
+        Serial.printf ("[%05d] ", millis());
+        Serial.println("Getting last configuration from EEPROM..."); 
+        #endif           
+      }
+
+      // Configuration file was found
+      else
+      {
+        // Get configuration values from SD card
+        #if DEBUG_SERIAL     
+        Serial.printf ("[%05d] ", millis());
+        Serial.println("Getting new configuration from SD card..."); 
+        #endif  
+
+        // Save values to EEPROM
+        
+        // Delete configuration file
+        if (!ConfigFile.remove())
+        {
+          #if DEBUG_SERIAL     
+          Serial.printf ("[%05d] ", millis());
+          Serial.println("Error deleting configuration file!"); 
+          #endif  
+        }
+      }
+    }
   }
-
-#if DEBUG_SERIAL
-  Serial.printf ("[%05d] ", millis());
-  Serial.println("Done.");
-#endif 
 
   /* ----------------------------------------------------------------------------------------- */
+
+  #if DEBUG_SERIAL 
+  Serial.printf ("[%05d] ", millis()); 
+  Serial.printf ("Connecting to \'%s\'... \n", WifiSSID);
+  #endif
+
+  // Start WiFi connection
+  WiFi.begin (WifiSSID, WifiPsw);
+  
+  /* ----------------------------------------------------------------------------------------- */  
 
 #if DEBUG_SERIAL 
   Serial.printf ("[%05d] ", millis());
@@ -228,38 +304,42 @@ void setup()
 
   /* ----------------------------------------------------------------------------------------- */
 
-#if DEBUG_SERIAL 
+  #if DEBUG_SERIAL 
   Serial.printf ("[%05d] ", millis());
   Serial.println("Configuring DS1390...");
-#endif
+  #endif
 
+  // Set DS1390 trickle charger mode (250 ohms with one series diode)
+  RTC.setTrickleChargerMode (DS1390_TCH_250_D); 
+    
   // Delay for DS1390 boot (mandatory)
   delay (200);
+
+  #if DEBUG_SERIAL 
+  Serial.printf ("[%05d] ", millis());
+  Serial.println("Done.");
+  #endif  
 
   // Check if memory was lost recently
   RTCDataValid = RTC.getValidation ();
 
-  // Invalid data - Proceed anyway and configure trickle charger
-  if (RTCDataValid == false)
+  // Unreliable RTC data - Proceed anyway
+  if (!RTCDataValid)
   {
-#if DEBUG_SERIAL  
+    #if DEBUG_SERIAL  
     Serial.printf ("[%05d] ", millis());
     Serial.println ("RTC memory content was recently lost! Please update date and time values.");  
-#endif      
-    // Set DS1390 trickle charger mode (250 ohms with one series diode)
-    RTC.setTrickleChargerMode (DS1390_TCH_250_D);    
+    #endif         
   }
-
-#if DEBUG_SERIAL        
+  
+  // RTC data is valid
   else
+  {
+    #if DEBUG_SERIAL
     Serial.printf ("[%05d] ", millis());
     Serial.println ("RTC memory content is valid.");
-#endif  
-  
-#if DEBUG_SERIAL 
-  Serial.printf ("[%05d] ", millis());
-  Serial.println("Done.");
-#endif  
+    #endif      
+  }
 
   /* ----------------------------------------------------------------------------------------- */  
 
@@ -275,197 +355,274 @@ void setup()
   // Get DS172 temperature
   SensorTemperature = TS.getTemperature();
 
-  // Prepare log string
-  snprintf (Buffer, sizeof(Buffer), "%010d; %.4f; %.4f; %s", 
-      EpochTime, BatteryVoltage, SensorTemperature, RTCDataValid ? "Valid" : "Invalid");
-
-#if DEBUG_SERIAL
-  Serial.printf ("[%05d] ", millis());
-  Serial.printf ("Log payload: %s \n", Buffer);
-#endif
-
   // LED off
   digitalWrite (PIN_LED, HIGH);
-
-  /* ----------------------------------------------------------------------------------------- */  
-
-  // Check for SD card
-  if (digitalRead(PIN_SD_CD))
-  {
-#if DEBUG_SERIAL   
-    Serial.printf ("[%05d] ", millis());
-    Serial.println("SD card not detected!");
-#endif         
-
-    // Call error function
-    RunOnError ();    
-  }
-  
-  // Open the log file
-  Log = SD.open(LogFile, FILE_WRITE);
-
-  // If the file opened okay, write to it
-  if (Log) 
-  {
-#if DEBUG_SERIAL    
-    Serial.printf ("[%05d] ", millis());
-    Serial.printf ("Writing to \'%s\'... \n", LogFile);
-#endif    
-
-    // Write to file
-    Log.println(Buffer);
     
-    // Close the file
-    Log.close();
-    
-#if DEBUG_SERIAL     
-    Serial.printf ("[%05d] ", millis());
-    Serial.println("Done.");
-#endif      
-  } 
-  
-  // Error opening the file
-  else 
-  {
-#if DEBUG_SERIAL       
-    Serial.printf ("[%05d] ", millis());
-    Serial.printf ("Error opening \'%s\'! \n", LogFile);
-#endif
-
-    // Call error function
-    RunOnError ();  
-  }
-
-  /* ----------------------------------------------------------------------------------------- */  
+  #if DEBUG_SERIAL  
+  // Save values to formatted buffer
+  snprintf (Buffer, sizeof(Buffer), "Epoch: %d, Vbat: %.4f V, Temp: %.4f C", 
+    EpochTime, BatteryVoltage, SensorTemperature);   
    
-#if DEBUG_SERIAL 
-  Serial.printf ("[%05d] ", millis()); 
-  Serial.print("Connecting to WiFi...");
-#endif
+  Serial.printf ("[%05d] ", millis());      
+  Serial.println(Buffer);
+  #endif    
 
-  // Start WiFi connection
-  WiFi.begin(WifiSSID, WifiPsw);
+  /* ----------------------------------------------------------------------------------------- */  
+
+  #if DEBUG_SERIAL   
+  Serial.printf ("[%05d] ", millis());      
+  Serial.println("Waiting for WiFi to connect...");
+  #endif  
 
   // Check connection status
   while(WiFi.status() != WL_CONNECTED)
   {
-    if (ConnectionCounter >= WIFI_TIMEOUT)
-    {
-#if DEBUG_SERIAL   
-      Serial.println();
-      Serial.printf ("[%05d] ", millis());      
-      Serial.println("Connection timed out!");
-#endif         
+    // Connection timeout exceded
+    if (ConnectionCounter >= (WIFI_TIMEOUT * 4))
+    {    
+      // Online log not available
+      LogToWifi = false;
 
-      // Call error function
-      RunOnError ();         
+      #if DEBUG_SERIAL   
+      Serial.printf ("[%05d] ", millis());      
+      Serial.println("WiFi connection timed-out!");
+      #endif  
+
+      // Exit while loop
+      break;
     }
 
-    // 1 second delay
-    delay(1000);
-
-    // Increase counter
-    ConnectionCounter++;    
+    // Increase timeout counter
+    else
+    {
+      // 1 second delay
+      delay(250);
+  
+      // Increase counter
+      ConnectionCounter++;    
+    }
   }
 
-#if DEBUG_SERIAL
-  Serial.println();
-  Serial.printf ("[%05d] ", millis());  
-  Serial.println("Connected.");
-#endif
+  // WiFi connected
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    // Online log available
+    LogToWifi = true;
+       
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] ", millis());  
+    Serial.println("WiFi connected.");
+    #endif
+  }
 
   /* ----------------------------------------------------------------------------------------- */  
 
-#if DEBUG_SERIAL
-  Serial.printf ("[%05d] ", millis());
-  Serial.printf ("Connecting to \'%s\'... \n", LogHostUrl);
-#endif
-
-  // Start HTTP client connection to host
-  LogClient.begin ((String)LogHostUrl);
-
-  // Define request timeout
-  LogClient.setTimeout(2000);
-
-  // Define request content type - Required to perform posts
-  LogClient.addHeader("Content-Type", "application/x-www-form-urlencoded");
-
-  // Delay to establish connection
-  delay (100);
+  // Post data if WiFi is connected
+  if (LogToWifi)
+  {
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] ", millis());
+    Serial.printf ("Connecting to \'%s\'... \n", LogHostUrl);
+    #endif
   
-#if DEBUG_SERIAL
-  Serial.printf ("[%05d] ", millis());  
-  Serial.println("Done.");   
-#endif
- 
-  // Prepare log string
-  snprintf (Buffer, sizeof(Buffer), "id=%s&log=Epo=%010dVbt=%.4fTmp=%.4fSts=%s", 
-      LogScriptID, EpochTime, BatteryVoltage, SensorTemperature, RTCDataValid ? "Valid" : "Invalid");     
-
-#if DEBUG_SERIAL
-  Serial.printf ("[%05d] ", millis());  
-  Serial.printf("POST payload: %s \n", Buffer);  
-#endif
-
-#if DEBUG_SERIAL
-  Serial.printf ("[%05d] ", millis());  
-  Serial.println ("Posting...");  
-#endif
-
-  // HTTP post request to host
-  short HTTPCode = LogClient.POST(Buffer); 
+    // Start HTTP client connection to host
+    LogClient.begin ((String)LogHostUrl);
   
-#if DEBUG_SERIAL 
-  Serial.printf ("[%05d] ", millis());   
-  Serial.printf ("HTTP response code: %d \n", HTTPCode);
+    // Define request timeout
+    LogClient.setTimeout(5000);
+  
+    // Define request content type - Required to perform posts
+    LogClient.addHeader("Content-Type", "application/x-www-form-urlencoded");
+  
+    // Delay to establish connection
+    delay (100);
+    
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] ", millis());  
+    Serial.println("Done.");   
+    #endif
+   
+    // Prepare log string
+    snprintf (Buffer, sizeof(Buffer), "id=%s&log=Epo=%010dVbt=%.4fTmp=%.4fSts=%s", 
+        LogScriptID, EpochTime, BatteryVoltage, SensorTemperature, RTCDataValid ? "Valid" : "Invalid");     
+  
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] ", millis());  
+    Serial.printf("POST payload: %s \n", Buffer);  
+    Serial.printf ("[%05d] ", millis());  
+    Serial.println ("Posting...");  
+    #endif
+  
+    // HTTP post request to host and get response code
+    short PostResponseCode = LogClient.POST(Buffer); 
+    
+    // Close client connection
+    LogClient.end();
 
-//  Serial.printf ("[%05d] ", millis());   
-//  Serial.print (LogClient.getString());
-#endif
+    // Post was successful
+    if (PostResponseCode != -1)
+    {
+      LogWifiSuccess = true;
 
-  // Close client connection
-  LogClient.end();
+      #if DEBUG_SERIAL 
+      Serial.printf ("[%05d] ", millis());   
+      Serial.println ("Done.");
+      #endif         
+    }
 
+    // Post failed
+    else
+    {
+      LogWifiSuccess = false;
+      
+      #if DEBUG_SERIAL 
+      Serial.printf ("[%05d] ", millis());   
+      Serial.println ("Failed to post data!");
+      #endif 
+    } 
+
+    #if DEBUG_SERIAL 
+    Serial.printf ("[%05d] ", millis());   
+    Serial.printf ("Response code: %d \n", PostResponseCode);
+    #endif          
+  }
+
+  /* ----------------------------------------------------------------------------------------- */
+
+  // Save data to SD card if available
+  if (LogToSD)
+  {    
+    // Open the log file
+    LogFile = SD.open(LogFilename, FILE_WRITE);
+  
+    // If the file opened okay, write to it
+    if (LogFile) 
+    {
+      #if DEBUG_SERIAL    
+      Serial.printf ("[%05d] ", millis());
+      Serial.printf ("Writing to \'%s\'... \n", LogFilename);
+      #endif    
+  
+      // Write to file
+      LogFile.println(Buffer);
+      
+      // Close the file
+      LogFile.close();
+
+      // Write was successful
+      LogSDSuccess = true;
+           
+      #if DEBUG_SERIAL     
+      Serial.printf ("[%05d] ", millis());
+      Serial.println("Done.");
+      #endif            
+    } 
+    
+    // Error opening the file
+    else 
+    {
+      LogSDSuccess = false;
+            
+      #if DEBUG_SERIAL       
+      Serial.printf ("[%05d] ", millis());
+      Serial.printf ("Error opening \'%s\'! \n", LogFilename);
+      #endif
+    }
+  }
+
+  /* ----------------------------------------------------------------------------------------- */ 
+
+  if (LogWifiSuccess && LogSDSuccess)
+  {
+    #if DEBUG_SERIAL       
+    Serial.printf ("[%05d] ", millis());
+    Serial.println ("Data was saved online and in the SD card.");
+    #endif      
+  }
+
+  else if (LogWifiSuccess)
+  {
+    #if DEBUG_SERIAL       
+    Serial.printf ("[%05d] ", millis());
+    Serial.println ("Data was saved online only.");
+    #endif      
+  }
+
+  else if (LogSDSuccess)
+  {
+    #if DEBUG_SERIAL       
+    Serial.printf ("[%05d] ", millis());
+    Serial.println ("Data was saved in the SD card only.");
+    #endif      
+  }  
+
+  else
+  {
+    #if DEBUG_SERIAL       
+    Serial.printf ("[%05d] ", millis());
+    Serial.println ("Data was not saved!");
+    #endif      
+  }          
+  
   /* ----------------------------------------------------------------------------------------- */   
 
-  // Check for low voltage
+  // Battery voltage is low
   if (BatteryVoltage < 3)
   {
-#if DEBUG_SERIAL 
+    #if DEBUG_SERIAL 
     Serial.printf ("[%05d] ", millis());
     Serial.println ("Low battery!");
     Serial.printf ("[%05d] ", millis());
-    Serial.println ("Shuting down...");
-#endif  
+    Serial.println ("Shutting down...");
+    #endif  
 
     // Flash LED to inform user
-    LED_Flash ();
+    FlashLED ();
     
     // Enter deep sleep forever
     ESP.deepSleep(0);  
   }
-  
-  /* ----------------------------------------------------------------------------------------- */  
 
-#if DEBUG_SERIAL
-  Serial.printf ("[%05d] ", millis());    
-  Serial.printf("Going to run again in %d seconds... \n", TIME_SLEEP_SAMPLES);
-#endif
-
-  // Enter deep sleep
-  ESP.deepSleep(TIME_SLEEP_SAMPLES*1e6); 
+  else
+  {
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] ", millis());    
+    Serial.printf("Running again in %d seconds... \n", TIME_SLEEP_SAMPLES);
+    #endif
+    
+    // Enter deep sleep
+    ESP.deepSleep(TIME_SLEEP_SAMPLES*1e6);     
+  }
 }
 
 /* ------------------------------------------------------------------------------------------- */
-// Loop function
+// Name:        loop
+// Description: This function runs in a loop after 'setup' finishes
+// Arguments:   None
+// Returns:     None
 /* ------------------------------------------------------------------------------------------- */
 
-void loop() 
+void loop () 
 {
 }
 
 /* ------------------------------------------------------------------------------------------- */
-// Error function
+// Name:        SDCardPresent
+// Description: Verify if the SD card is present by checking the status of Card Detect pin
+// Arguments:   None
+// Returns:     true if card is present or false
+/* ------------------------------------------------------------------------------------------- */
+
+bool SDCardPresent ()
+{
+  return (!digitalRead(PIN_SD_CD));
+}
+
+/* ------------------------------------------------------------------------------------------- */
+// Name:        RunOnError
+// Description: This function is called when an error occur
+// Arguments:   None
+// Returns:     None
 /* ------------------------------------------------------------------------------------------- */
 
 void RunOnError () 
@@ -476,10 +633,28 @@ void RunOnError ()
 #endif     
 
   // Flash LED to inform user
-  LED_Flash ();
+  FlashLED ();
   
   // Enter deep sleep
   ESP.deepSleep(TIME_SLEEP_ERROR*1e6);    
+}
+
+/* ------------------------------------------------------------------------------------------- */
+// Name:        FlashLED
+// Description: Flashes the onboard LED
+// Arguments:   None
+// Returns:     None
+/* ------------------------------------------------------------------------------------------- */
+
+void FlashLED ()
+{
+  digitalWrite (PIN_LED, LOW);
+  delay(200);
+  digitalWrite (PIN_LED, HIGH);
+  delay(200);
+  digitalWrite (PIN_LED, LOW); 
+  delay(200);
+  digitalWrite (PIN_LED, HIGH);  
 }
 
 /* ------------------------------------------------------------------------------------------- */
