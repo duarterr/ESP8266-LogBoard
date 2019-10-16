@@ -4,6 +4,12 @@
 // E-mail:  duarte.renan@hotmail.com
 // Date:    October 14, 2019
 //
+// Notes:   Sending data to Google Sheets (via Google Script) can be done directly using the
+//          WiFiClientSecure library. However, HTTPS requests require more heap memory than
+//          the device has available in this code when the HTTPS connection is made.
+//          As a solution, this code sends an HTTP request to a server where a HTTPs redirect
+//          is performed using cURL.
+//
 // Released into the public domain
 /* ------------------------------------------------------------------------------------------- */
 
@@ -11,14 +17,20 @@
 // Libraries
 /* ------------------------------------------------------------------------------------------- */
 
+// DS1722 SPI thermometer related functions
 #include <DS1722_SPI.h> // https://github.com/duarterr/Arduino-DS1722-SPI
+
+// DS1390 SPI real time clock related functions
 #include <DS1390_SPI.h> // https://github.com/duarterr/Arduino-DS1390-SPI
 
+// ESP8266 WiFi related functions
 #include <ESP8266WiFi.h>
-#include <WiFiClientSecure.h>
 
+// ESP8266 HTTP client related functions
+#include <ESP8266HTTPClient.h>
+
+// SD card related functions
 #include <SdFat.h>
-
 using namespace sdfat;
 
 /* ------------------------------------------------------------------------------------------- */
@@ -44,6 +56,9 @@ using namespace sdfat;
 
 // Log file
 #define LOG_FILE                "Log.csv"
+
+// Timezone (-12 +12)
+#define TIMEZONE                -3
 
 /* ------------------------------------------------------------------------------------------- */
 // Hardware defines
@@ -77,8 +92,8 @@ SdFat SD;
 File Log;
 
 #if USE_WIFI    
-// HTTPS client
-WiFiClientSecure LogClient;
+// HTTP client
+HTTPClient LogClient;
 #endif
 
 /* ------------------------------------------------------------------------------------------- */
@@ -91,9 +106,7 @@ const char *WifiSSID = "Aline e Renan 2.4GHz";
 const char *WifiPsw = "luiz_priscilo";
 
 // Google script settings
-const char* LogHostUrl = "script.google.com";
-const int LogHostUrlPort = 443;
-const char LogFingerprint[] PROGMEM = "d1 5a f8 09 73 6d 00 b0 65 10 1b a4 f3 56 3a f1 69 1d ea 53";
+const char* LogHostUrl = "http://coral.ufsm.br/gedre/accesscontrol/";
 const char* LogScriptID = "AKfycbyg0E05h6GBNsm6fbYCDYqk5fxI9bxTghrIhBhSW9CdWW3HI43l";
 #endif
 
@@ -103,8 +116,8 @@ float SensorTemperature = 0;
 // ADC voltage
 float BatteryVoltage = 0;
 
-// Date and time
-DS1390DateTime Time;
+// Date and time - Epoch format
+unsigned long EpochTime = 0;
 
 // RTC data valid flag
 bool RTCDataValid = false;
@@ -141,12 +154,6 @@ void setup()
 #if DEBUG_SERIAL
   Serial.begin(74880);
   while (!Serial);  
-
-  Serial.println(); 
-  Serial.print("Compilation date: ");
-  Serial.print(__DATE__);
-  Serial.print(" - ");
-  Serial.println(__TIME__); 
 #endif
 
   /* ----------------------------------------------------------------------------------------- */
@@ -157,29 +164,10 @@ void setup()
   // LED off
   digitalWrite (PIN_LED, HIGH);
     
-  /* ----------------------------------------------------------------------------------------- */  
-
-  // Calculate battery voltage
-  BatteryVoltage = analogRead(PIN_ADC)*ADC_GAIN;  
-
-  // Check for low voltage
-  if (BatteryVoltage < 3)
-  {
-#if DEBUG_SERIAL 
-    Serial.println("Low battery!");
-    Serial.println("Shuting down...");
-#endif  
-
-    // Flash LED to inform user
-    LED_Flash ();
-    
-    // Enter deep sleep forever
-    ESP.deepSleep(0);  
-  }
-
   /* ----------------------------------------------------------------------------------------- */ 
    
 #if DEBUG_SERIAL 
+  Serial.printf ("[%05d] ", millis());
   Serial.println("Initializing SD card...");
 #endif
 
@@ -190,6 +178,7 @@ void setup()
   if (digitalRead(PIN_SD_CD))
   {
 #if DEBUG_SERIAL   
+    Serial.printf ("[%05d] ", millis());
     Serial.println("SD card not detected!");
 #endif         
 
@@ -201,6 +190,7 @@ void setup()
   if (!SD.begin(PIN_SD_CS)) 
   {
 #if DEBUG_SERIAL     
+    Serial.printf ("[%05d] ", millis());
     Serial.println("Initialization failed!"); 
 #endif         
 
@@ -208,13 +198,15 @@ void setup()
     RunOnError (); 
   }
 
-#if DEBUG_SERIAL   
+#if DEBUG_SERIAL
+  Serial.printf ("[%05d] ", millis());
   Serial.println("Done.");
 #endif 
 
   /* ----------------------------------------------------------------------------------------- */
 
 #if DEBUG_SERIAL 
+  Serial.printf ("[%05d] ", millis());
   Serial.println("Configuring DS1722...");
 #endif
 
@@ -228,12 +220,14 @@ void setup()
   TS.requestConversion ();
 
 #if DEBUG_SERIAL 
+  Serial.printf ("[%05d] ", millis());
   Serial.println("Done.");
 #endif  
 
   /* ----------------------------------------------------------------------------------------- */
 
 #if DEBUG_SERIAL 
+  Serial.printf ("[%05d] ", millis());
   Serial.println("Configuring DS1390...");
 #endif
 
@@ -247,18 +241,21 @@ void setup()
   if (RTCDataValid == false)
   {
 #if DEBUG_SERIAL  
+    Serial.printf ("[%05d] ", millis());
     Serial.println ("Memory content was recently lost! Please update date and time values.");  
 #endif      
-    // Set DS1390 trickle charger mode (250 ohms without series diode)
-    RTC.setTrickleChargerMode (DS1390_TCH_250_NO_D);    
+    // Set DS1390 trickle charger mode (250 ohms with one series diode)
+    RTC.setTrickleChargerMode (DS1390_TCH_250_D);    
   }
 
 #if DEBUG_SERIAL        
   else
+    Serial.printf ("[%05d] ", millis());
     Serial.println ("Memory content is valid.");
 #endif  
   
 #if DEBUG_SERIAL 
+  Serial.printf ("[%05d] ", millis());
   Serial.println("Done.");
 #endif  
 
@@ -267,25 +264,22 @@ void setup()
   // LED on
   digitalWrite (PIN_LED, LOW);
 
+  // Calculate battery voltage
+  BatteryVoltage = analogRead(PIN_ADC)*ADC_GAIN;   
+
   // Get current time
-  Time.Second = RTC.getDateTimeSeconds ();
-  Time.Minute = RTC.getDateTimeMinutes ();  
-  Time.Hour = RTC.getDateTimeHours ();      
-  Time.Day = RTC.getDateTimeDay ();
-  Time.Month = RTC.getDateTimeMonth ();
-  Time.Year = RTC.getDateTimeYear ();
+  EpochTime = RTC.getDateTimeEpoch (TIMEZONE);
   
   // Get DS172 temperature
   SensorTemperature = TS.getTemperature();
 
   // Prepare log string
-  snprintf (Buffer, sizeof(Buffer), "%02d/%02d/20%02d - %02d:%02d:%02d; %.4f; %.4f; %s", 
-      Time.Day, Time.Month, Time.Year, Time.Hour, Time.Minute, Time.Second, BatteryVoltage, 
-      SensorTemperature, RTCDataValid ? "Valid" : "Invalid");
+  snprintf (Buffer, sizeof(Buffer), "%010d; %.4f; %.4f; %s", 
+      EpochTime, BatteryVoltage, SensorTemperature, RTCDataValid ? "Valid" : "Invalid");
 
 #if DEBUG_SERIAL
-  Serial.printf ("Log string: ");
-  Serial.println(Buffer);
+  Serial.printf ("[%05d] ", millis());
+  Serial.printf ("Log payload: %s \n", Buffer);
 #endif
 
   // LED off
@@ -297,6 +291,7 @@ void setup()
   if (digitalRead(PIN_SD_CD))
   {
 #if DEBUG_SERIAL   
+    Serial.printf ("[%05d] ", millis());
     Serial.println("SD card not detected!");
 #endif         
 
@@ -311,6 +306,7 @@ void setup()
   if (Log) 
   {
 #if DEBUG_SERIAL    
+    Serial.printf ("[%05d] ", millis());
     Serial.printf ("Writing to \'%s\'... \n", LOG_FILE);
 #endif    
 
@@ -321,14 +317,16 @@ void setup()
     Log.close();
     
 #if DEBUG_SERIAL     
+    Serial.printf ("[%05d] ", millis());
     Serial.println("Done.");
 #endif      
   } 
-
+  
+  // Error opening the file
   else 
   {
 #if DEBUG_SERIAL       
-    // Print an error if the file didn't open
+    Serial.printf ("[%05d] ", millis());
     Serial.printf ("Error opening \'%s\'! \n", LOG_FILE);
 #endif
 
@@ -339,7 +337,8 @@ void setup()
   /* ----------------------------------------------------------------------------------------- */  
 
 #if USE_WIFI    
-#if DEBUG_SERIAL  
+#if DEBUG_SERIAL 
+  Serial.printf ("[%05d] ", millis()); 
   Serial.print("Connecting to WiFi...");
 #endif
 
@@ -353,6 +352,7 @@ void setup()
     {
 #if DEBUG_SERIAL   
       Serial.println();
+      Serial.printf ("[%05d] ", millis());      
       Serial.println("Connection timed out!");
 #endif         
 
@@ -369,6 +369,7 @@ void setup()
 
 #if DEBUG_SERIAL
   Serial.println();
+  Serial.printf ("[%05d] ", millis());  
   Serial.println("Connected.");
 #endif
 #endif
@@ -377,67 +378,80 @@ void setup()
 
 #if USE_WIFI   
 #if DEBUG_SERIAL
-  Serial.printf("Connecting to %s:%d using fingerprint \'%s\' \n", LogHostUrl, LogHostUrlPort, LogFingerprint);
+  Serial.printf ("[%05d] ", millis());
+  Serial.printf ("Connecting to \'%s\'... \n", LogHostUrl);
 #endif
 
-  // Set certificate fingerprint
-  LogClient.setFingerprint (LogFingerprint);
+  // Start HTTP client connection to host
+  LogClient.begin ((String)LogHostUrl);
 
-  Serial.println (ESP.getFreeHeap());
+  // Define request timeout
+  LogClient.setTimeout(2000);
+
+  // Define request content type - Required to perform posts
+  LogClient.addHeader("Content-Type", "application/x-www-form-urlencoded");
+
+  // Delay to establish connection
+  delay (100);
   
-  // Start HTTPs client connection to host
-  if (!LogClient.connect (LogHostUrl, LogHostUrlPort)) 
-  {
-#if DEBUG_SERIAL    
-    Serial.println ("Connection failed!");
-#endif         
-    Serial.println (ESP.getFreeHeap());
-    // Call error function
-    RunOnError ();
-  }
-    
-#if DEBUG_SERIAL  
+#if DEBUG_SERIAL
+  Serial.printf ("[%05d] ", millis());  
   Serial.println("Done.");   
-#endif 
-
-  // Prepare GET string
-  //String url = "/macros/s/" + (String)LogScriptID + "/exec?value=2";
-  //Serial.println(url);
-  
+#endif
+ 
   // Prepare log string
-  snprintf (Buffer, sizeof(Buffer), "/macros/s/%s/exec?value=%02d/%02d/20%02d - %02d:%02d:%02d; %.4f; %.4f; %s", 
-      LogScriptID, Time.Day, Time.Month, Time.Year, Time.Hour, Time.Minute, Time.Second, BatteryVoltage, 
-      SensorTemperature, RTCDataValid ? "Valid" : "Invalid");
+  snprintf (Buffer, sizeof(Buffer), "id=%s&log=%010d;%.4f;%.4f;%s", 
+      LogScriptID, EpochTime, BatteryVoltage, SensorTemperature, RTCDataValid ? "Valid" : "Invalid");     
 
-#if DEBUG_SERIAL  
-  Serial.println (Buffer);
+#if DEBUG_SERIAL
+  Serial.printf ("[%05d] ", millis());  
+  Serial.printf("POST Payload: %s \n", Buffer);  
 #endif
 
-//  LogClient.print(String("GET ") + (String)Buffer + " HTTP/1.1\r\n" +
-//               "Host: " + LogHostUrl + "\r\n" +
-//               "User-Agent: ESP8266LogBoard\r\n" +
-//               "Connection: close\r\n\r\n");
+#if DEBUG_SERIAL
+  Serial.printf ("[%05d] ", millis());  
+  Serial.println ("Posting...");  
+#endif
 
-      
-  while(LogClient.connected()) 
+  // HTTP post request to host
+  short HTTPCode = LogClient.POST(Buffer); 
+  
+#if DEBUG_SERIAL 
+  Serial.printf ("[%05d] ", millis());   
+  Serial.printf ("HTTP response code: %d \n", HTTPCode);
+
+//  Serial.printf ("[%05d] ", millis());   
+//  Serial.print (LogClient.getString());
+#endif
+
+  // Close client connection
+  LogClient.end();
+
+#endif
+
+  /* ----------------------------------------------------------------------------------------- */   
+
+  // Check for low voltage
+  if (BatteryVoltage < 3)
   {
-     while(LogClient.available()) 
-     {
-        Serial.write (LogClient.read());
-     }
+#if DEBUG_SERIAL 
+    Serial.printf ("[%05d] ", millis());
+    Serial.println ("Low battery!");
+    Serial.printf ("[%05d] ", millis());
+    Serial.println ("Shuting down...");
+#endif  
+
+    // Flash LED to inform user
+    LED_Flash ();
+    
+    // Enter deep sleep forever
+    ESP.deepSleep(0);  
   }
   
-  LogClient.stop();
-  
-//#if DEBUG_SERIAL    
-//  Serial.print("HTTP response code: ");
-//  Serial.println(httpCode);
-//#endif
-#endif
-
   /* ----------------------------------------------------------------------------------------- */  
 
-#if DEBUG_SERIAL    
+#if DEBUG_SERIAL
+  Serial.printf ("[%05d] ", millis());    
   Serial.printf("Going run again in %d seconds... \n", TIME_SLEEP_SAMPLES);
 #endif
 
@@ -459,15 +473,16 @@ void loop()
 
 void RunOnError () 
 {
-#if DEBUG_SERIAL   
-    Serial.printf("Going to sleep for %d seconds... \n", TIME_SLEEP_ERROR);
+#if DEBUG_SERIAL 
+  Serial.printf ("[%05d] ", millis());  
+  Serial.printf("Going to sleep for %d seconds... \n", TIME_SLEEP_ERROR);
 #endif     
 
-    // Flash LED to inform user
-    LED_Flash ();
-    
-    // Enter deep sleep
-    ESP.deepSleep(TIME_SLEEP_ERROR*1e6);    
+  // Flash LED to inform user
+  LED_Flash ();
+  
+  // Enter deep sleep
+  ESP.deepSleep(TIME_SLEEP_ERROR*1e6);    
 }
 
 /* ------------------------------------------------------------------------------------------- */
