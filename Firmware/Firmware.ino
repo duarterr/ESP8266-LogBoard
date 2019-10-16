@@ -13,6 +13,19 @@
 // Released into the public domain
 /* ------------------------------------------------------------------------------------------- */
 
+/* Init
+ * Check for SD card -  N: Only Wifi, load last config from EEPROM
+ *                      Y: Check for config file -  N: Load last from EEPROM
+ *                                                  Y: Transfer to EEPROM, delete config file
+ * Start wifi connection                                                  
+ * Start peripherals
+ * Sample data
+ * Check wifi connection -  Y: Post data - Get result
+ *                          N: Save to SD card if present
+ * Check Vbat -   H: Sleep TIME_SAMPLE                          
+ *                L: Sleep forever
+ */
+
 /* ------------------------------------------------------------------------------------------- */
 // Libraries
 /* ------------------------------------------------------------------------------------------- */
@@ -40,22 +53,14 @@ using namespace sdfat;
 // Code debug with serial port
 #define DEBUG_SERIAL            true
 
-// Use WiFi to post data online
-#define USE_WIFI                true
-
 // Time between samples (seconds) 
 #define TIME_SLEEP_SAMPLES      30
 
 // Deep sleep time if error (seconds)
 #define TIME_SLEEP_ERROR        30
-
-#if USE_WIFI    
+   
 // WiFi connection timeout (seconds)
 #define WIFI_TIMEOUT            5
-#endif
-
-// Log file
-#define LOG_FILE                "Log.csv"
 
 // Timezone (-12 +12)
 #define TIMEZONE                -3
@@ -90,25 +95,24 @@ SdFat SD;
 
 // Log file
 File Log;
-
-#if USE_WIFI    
+    
 // HTTP client
 HTTPClient LogClient;
-#endif
 
 /* ------------------------------------------------------------------------------------------- */
 // Global variables
 /* ------------------------------------------------------------------------------------------- */
 
-#if USE_WIFI    
+// Log file
+const char* LogFile = "Log.csv";
+    
 // Wifi settings
-const char *WifiSSID = "Aline e Renan 2.4GHz";
-const char *WifiPsw = "luiz_priscilo";
+const char* WifiSSID = "GEDRE Pos Graduacao";
+const char* WifiPsw = "gedrepos2016";
 
 // Google script settings
 const char* LogHostUrl = "http://coral.ufsm.br/gedre/accesscontrol/";
 const char* LogScriptID = "AKfycbyg0E05h6GBNsm6fbYCDYqk5fxI9bxTghrIhBhSW9CdWW3HI43l";
-#endif
 
 // DS1722 temperature
 float SensorTemperature = 0;
@@ -124,11 +128,9 @@ bool RTCDataValid = false;
 
 // Log string
 char Buffer[200] = {0};
-
-#if USE_WIFI    
+    
 // WiFi connection counter
 unsigned char ConnectionCounter = 0;
-#endif
 
 /* ------------------------------------------------------------------------------------------- */
 // LED flash function
@@ -242,7 +244,7 @@ void setup()
   {
 #if DEBUG_SERIAL  
     Serial.printf ("[%05d] ", millis());
-    Serial.println ("Memory content was recently lost! Please update date and time values.");  
+    Serial.println ("RTC memory content was recently lost! Please update date and time values.");  
 #endif      
     // Set DS1390 trickle charger mode (250 ohms with one series diode)
     RTC.setTrickleChargerMode (DS1390_TCH_250_D);    
@@ -251,7 +253,7 @@ void setup()
 #if DEBUG_SERIAL        
   else
     Serial.printf ("[%05d] ", millis());
-    Serial.println ("Memory content is valid.");
+    Serial.println ("RTC memory content is valid.");
 #endif  
   
 #if DEBUG_SERIAL 
@@ -300,14 +302,14 @@ void setup()
   }
   
   // Open the log file
-  Log = SD.open(LOG_FILE, FILE_WRITE);
+  Log = SD.open(LogFile, FILE_WRITE);
 
   // If the file opened okay, write to it
   if (Log) 
   {
 #if DEBUG_SERIAL    
     Serial.printf ("[%05d] ", millis());
-    Serial.printf ("Writing to \'%s\'... \n", LOG_FILE);
+    Serial.printf ("Writing to \'%s\'... \n", LogFile);
 #endif    
 
     // Write to file
@@ -327,7 +329,7 @@ void setup()
   {
 #if DEBUG_SERIAL       
     Serial.printf ("[%05d] ", millis());
-    Serial.printf ("Error opening \'%s\'! \n", LOG_FILE);
+    Serial.printf ("Error opening \'%s\'! \n", LogFile);
 #endif
 
     // Call error function
@@ -335,8 +337,7 @@ void setup()
   }
 
   /* ----------------------------------------------------------------------------------------- */  
-
-#if USE_WIFI    
+   
 #if DEBUG_SERIAL 
   Serial.printf ("[%05d] ", millis()); 
   Serial.print("Connecting to WiFi...");
@@ -372,11 +373,9 @@ void setup()
   Serial.printf ("[%05d] ", millis());  
   Serial.println("Connected.");
 #endif
-#endif
 
   /* ----------------------------------------------------------------------------------------- */  
 
-#if USE_WIFI   
 #if DEBUG_SERIAL
   Serial.printf ("[%05d] ", millis());
   Serial.printf ("Connecting to \'%s\'... \n", LogHostUrl);
@@ -400,12 +399,12 @@ void setup()
 #endif
  
   // Prepare log string
-  snprintf (Buffer, sizeof(Buffer), "id=%s&log=%010d;%.4f;%.4f;%s", 
+  snprintf (Buffer, sizeof(Buffer), "id=%s&log=Epo=%010dVbt=%.4fTmp=%.4fSts=%s", 
       LogScriptID, EpochTime, BatteryVoltage, SensorTemperature, RTCDataValid ? "Valid" : "Invalid");     
 
 #if DEBUG_SERIAL
   Serial.printf ("[%05d] ", millis());  
-  Serial.printf("POST Payload: %s \n", Buffer);  
+  Serial.printf("POST payload: %s \n", Buffer);  
 #endif
 
 #if DEBUG_SERIAL
@@ -426,8 +425,6 @@ void setup()
 
   // Close client connection
   LogClient.end();
-
-#endif
 
   /* ----------------------------------------------------------------------------------------- */   
 
@@ -452,7 +449,7 @@ void setup()
 
 #if DEBUG_SERIAL
   Serial.printf ("[%05d] ", millis());    
-  Serial.printf("Going run again in %d seconds... \n", TIME_SLEEP_SAMPLES);
+  Serial.printf("Going to run again in %d seconds... \n", TIME_SLEEP_SAMPLES);
 #endif
 
   // Enter deep sleep
@@ -475,7 +472,7 @@ void RunOnError ()
 {
 #if DEBUG_SERIAL 
   Serial.printf ("[%05d] ", millis());  
-  Serial.printf("Going to sleep for %d seconds... \n", TIME_SLEEP_ERROR);
+  Serial.printf ("Going to sleep for %d seconds... \n", TIME_SLEEP_ERROR);
 #endif     
 
   // Flash LED to inform user
