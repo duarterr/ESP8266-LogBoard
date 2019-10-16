@@ -15,7 +15,7 @@
 #include <DS1390_SPI.h> // https://github.com/duarterr/Arduino-DS1390-SPI
 
 #include <ESP8266WiFi.h>
-#include <ESP8266HTTPClient.h>
+#include <WiFiClientSecure.h>
 
 #include <SdFat.h>
 
@@ -29,7 +29,7 @@ using namespace sdfat;
 #define DEBUG_SERIAL            true
 
 // Use WiFi to post data online
-#define USE_WIFI                false
+#define USE_WIFI                true
 
 // Time between samples (seconds) 
 #define TIME_SLEEP_SAMPLES      30
@@ -77,8 +77,8 @@ SdFat SD;
 File Log;
 
 #if USE_WIFI    
-// HTTP client
-HTTPClient Log_Client;
+// HTTPS client
+WiFiClientSecure LogClient;
 #endif
 
 /* ------------------------------------------------------------------------------------------- */
@@ -87,9 +87,14 @@ HTTPClient Log_Client;
 
 #if USE_WIFI    
 // Wifi settings
-const char *SERVER_WIFI_SSID = "Aline e Renan 2.4GHz";
-const char *SERVER_WIFI_PASS = "luiz_priscilo";
-const char* fingerprint = "C6 69 4A 9D 71 F5 EA A5 EE 3D 63 EE 9F BC C6 27 F7 C3 A8 A6";
+const char *WifiSSID = "Aline e Renan 2.4GHz";
+const char *WifiPsw = "luiz_priscilo";
+
+// Google script settings
+const char* LogHostUrl = "script.google.com";
+const int LogHostUrlPort = 443;
+const char LogFingerprint[] PROGMEM = "d1 5a f8 09 73 6d 00 b0 65 10 1b a4 f3 56 3a f1 69 1d ea 53";
+const char* LogScriptID = "AKfycbyg0E05h6GBNsm6fbYCDYqk5fxI9bxTghrIhBhSW9CdWW3HI43l";
 #endif
 
 // DS1722 temperature
@@ -105,7 +110,7 @@ DS1390DateTime Time;
 bool RTCDataValid = false;
 
 // Log string
-char Buffer[50] = {0};
+char Buffer[200] = {0};
 
 #if USE_WIFI    
 // WiFi connection counter
@@ -186,14 +191,10 @@ void setup()
   {
 #if DEBUG_SERIAL   
     Serial.println("SD card not detected!");
-    Serial.printf("Going to sleep for %d seconds... \n", TIME_SLEEP_ERROR);
-#endif     
+#endif         
 
-    // Flash LED to inform user
-    LED_Flash ();
-    
-    // Enter deep sleep
-    ESP.deepSleep(TIME_SLEEP_ERROR*1e6);     
+    // Call error function
+    RunOnError ();
   }
 
   // Initialize SD card
@@ -201,14 +202,10 @@ void setup()
   {
 #if DEBUG_SERIAL     
     Serial.println("Initialization failed!"); 
-    Serial.printf("Going to sleep for %d seconds...", TIME_SLEEP_ERROR);
-#endif
+#endif         
 
-    // Flash LED to inform user
-    LED_Flash ();
-    
-    // Enter deep sleep
-    ESP.deepSleep(TIME_SLEEP_ERROR*1e6); 
+    // Call error function
+    RunOnError (); 
   }
 
 #if DEBUG_SERIAL   
@@ -301,14 +298,10 @@ void setup()
   {
 #if DEBUG_SERIAL   
     Serial.println("SD card not detected!");
-    Serial.printf("Going to sleep for %d seconds... \n", TIME_SLEEP_ERROR);
-#endif     
+#endif         
 
-    // Flash LED to inform user
-    LED_Flash ();
-    
-    // Enter deep sleep
-    ESP.deepSleep(TIME_SLEEP_ERROR*1e6);     
+    // Call error function
+    RunOnError ();    
   }
   
   // Open the log file
@@ -318,7 +311,7 @@ void setup()
   if (Log) 
   {
 #if DEBUG_SERIAL    
-    Serial.printf ("Writing to %s... \n", LOG_FILE);
+    Serial.printf ("Writing to \'%s\'... \n", LOG_FILE);
 #endif    
 
     // Write to file
@@ -336,22 +329,22 @@ void setup()
   {
 #if DEBUG_SERIAL       
     // Print an error if the file didn't open
-    Serial.printf ("Error opening %s! \n", LOG_FILE);
+    Serial.printf ("Error opening \'%s\'! \n", LOG_FILE);
 #endif
 
-    // Flash LED to inform user
-    LED_Flash ();     
+    // Call error function
+    RunOnError ();  
   }
 
   /* ----------------------------------------------------------------------------------------- */  
 
 #if USE_WIFI    
 #if DEBUG_SERIAL  
-  Serial.print("Connecting to WiFi");
+  Serial.print("Connecting to WiFi...");
 #endif
 
   // Start WiFi connection
-  WiFi.begin(SERVER_WIFI_SSID, SERVER_WIFI_PASS);
+  WiFi.begin(WifiSSID, WifiPsw);
 
   // Check connection status
   while(WiFi.status() != WL_CONNECTED)
@@ -361,19 +354,11 @@ void setup()
 #if DEBUG_SERIAL   
       Serial.println();
       Serial.println("Connection timed out!");
-      Serial.printf("Going to sleep for %d seconds... \n", TIME_SLEEP_ERROR);
-#endif     
-  
-      // Flash LED to inform user
-      LED_Flash ();
-      
-      // Enter deep sleep
-      ESP.deepSleep(TIME_SLEEP_ERROR*1e6);           
+#endif         
+
+      // Call error function
+      RunOnError ();         
     }
-    
-#if DEBUG_SERIAL    
-    Serial.print(".");
-#endif
 
     // 1 second delay
     delay(1000);
@@ -383,57 +368,77 @@ void setup()
   }
 
 #if DEBUG_SERIAL
-  Serial.println(" ");
+  Serial.println();
   Serial.println("Connected.");
-
-  Serial.println("Starting HTTPs client...");
-#endif
-  
-  // Start HTTP client connection to host
-  Log_Client.begin("https://script.google.com/macros/s/AKfycbyg0E05h6GBNsm6fbYCDYqk5fxI9bxTghrIhBhSW9CdWW3HI43l/exec", fingerprint);
-
-//   while(!Log_Client.connected())
-//   {
-//    // 1 second delay
-//    delay(1000);
-//    
-//#if DEBUG_SERIAL    
-//    Serial.print(".");
-//#endif
-//  }
-  
-  // Define request timeout
-  Log_Client.setTimeout(5000);
-  
-  // Define request content type - Required to perform posts
-  Log_Client.addHeader("Content-Type", "application/x-www-form-urlencoded");
-
-#if DEBUG_SERIAL  
-  Serial.println("Done.");   
-#endif 
-
-#if DEBUG_SERIAL  
-  Serial.println("Posting...");
-#endif
-
-  // Prepare log string
-  snprintf (Buffer, sizeof(Buffer), "value=%02d/%02d/20%02d - %02d:%02d:%02d; %.4f; %.4f; %s", 
-      Time.Day, Time.Month, Time.Year, Time.Hour, Time.Minute, Time.Second, BatteryVoltage, 
-      SensorTemperature, RTCDataValid ? "Valid" : "Invalid");
-      
-  int httpCode = Log_Client.POST(Buffer);
-  Log_Client.getString();
-
-#if DEBUG_SERIAL    
-  Serial.print("HTTP response code: ");
-  Serial.println(httpCode);
 #endif
 #endif
 
   /* ----------------------------------------------------------------------------------------- */  
 
+#if USE_WIFI   
+#if DEBUG_SERIAL
+  Serial.printf("Connecting to %s:%d using fingerprint \'%s\' \n", LogHostUrl, LogHostUrlPort, LogFingerprint);
+#endif
+
+  // Set certificate fingerprint
+  LogClient.setFingerprint (LogFingerprint);
+
+  Serial.println (ESP.getFreeHeap());
+  
+  // Start HTTPs client connection to host
+  if (!LogClient.connect (LogHostUrl, LogHostUrlPort)) 
+  {
 #if DEBUG_SERIAL    
-  Serial.printf("Going to sleep for %d seconds... \n", TIME_SLEEP_SAMPLES);
+    Serial.println ("Connection failed!");
+#endif         
+    Serial.println (ESP.getFreeHeap());
+    // Call error function
+    RunOnError ();
+  }
+    
+#if DEBUG_SERIAL  
+  Serial.println("Done.");   
+#endif 
+
+  // Prepare GET string
+  //String url = "/macros/s/" + (String)LogScriptID + "/exec?value=2";
+  //Serial.println(url);
+  
+  // Prepare log string
+  snprintf (Buffer, sizeof(Buffer), "/macros/s/%s/exec?value=%02d/%02d/20%02d - %02d:%02d:%02d; %.4f; %.4f; %s", 
+      LogScriptID, Time.Day, Time.Month, Time.Year, Time.Hour, Time.Minute, Time.Second, BatteryVoltage, 
+      SensorTemperature, RTCDataValid ? "Valid" : "Invalid");
+
+#if DEBUG_SERIAL  
+  Serial.println (Buffer);
+#endif
+
+//  LogClient.print(String("GET ") + (String)Buffer + " HTTP/1.1\r\n" +
+//               "Host: " + LogHostUrl + "\r\n" +
+//               "User-Agent: ESP8266LogBoard\r\n" +
+//               "Connection: close\r\n\r\n");
+
+      
+  while(LogClient.connected()) 
+  {
+     while(LogClient.available()) 
+     {
+        Serial.write (LogClient.read());
+     }
+  }
+  
+  LogClient.stop();
+  
+//#if DEBUG_SERIAL    
+//  Serial.print("HTTP response code: ");
+//  Serial.println(httpCode);
+//#endif
+#endif
+
+  /* ----------------------------------------------------------------------------------------- */  
+
+#if DEBUG_SERIAL    
+  Serial.printf("Going run again in %d seconds... \n", TIME_SLEEP_SAMPLES);
 #endif
 
   // Enter deep sleep
@@ -446,6 +451,23 @@ void setup()
 
 void loop() 
 {
+}
+
+/* ------------------------------------------------------------------------------------------- */
+// Error function
+/* ------------------------------------------------------------------------------------------- */
+
+void RunOnError () 
+{
+#if DEBUG_SERIAL   
+    Serial.printf("Going to sleep for %d seconds... \n", TIME_SLEEP_ERROR);
+#endif     
+
+    // Flash LED to inform user
+    LED_Flash ();
+    
+    // Enter deep sleep
+    ESP.deepSleep(TIME_SLEEP_ERROR*1e6);    
 }
 
 /* ------------------------------------------------------------------------------------------- */
