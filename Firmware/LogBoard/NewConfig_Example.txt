@@ -24,7 +24,7 @@ $WifiPsw Your WiFi Psw
 $Timezone -3
 
 // Time between samples (1 to 65535 seconds)
-$SampleInterval 30
+$LogInverval 30
 
 // Time to wait after on error (1 to 65535 seconds)
 $ErrorInterval 30

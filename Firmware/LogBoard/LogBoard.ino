@@ -16,8 +16,10 @@
 // Code workflow: 
 // (1) Init EEPROM
 // (2) SD card present? -  N: Log only via Wifi. Load config from EEPROM
-//                         Y: SD has new config file? -  N: Load config from EEPROM
-//                                                       Y: Save to EEPROM. Delete config file
+//                         Y1: SD has new firmware file? -  N: Move on
+//                                                          Y: Update firmare
+//                         Y2: SD has new config file? -  N: Load config from EEPROM
+//                                                        Y: Save to EEPROM. Delete config file
 // (3) Start wifi connection                                                  
 // (4) Start peripherals
 // (5) Sample data
@@ -72,6 +74,9 @@ using namespace sdfat;
 // Default configuration file
 const PROGMEM char* ConfigFilename = "NewConfig.txt";
 
+// Default firmware file
+const PROGMEM char* UpdateFilename = "NewFirmware.bin";
+
 // Code debug with serial port
 #define DEBUG_SERIAL            true
 
@@ -107,6 +112,9 @@ SdFat SDCard;
 // Configuration file
 File ConfigFile;
 
+// Update file
+File UpdateFile;
+
 // Log file
 File LogFile;
     
@@ -125,7 +133,7 @@ struct StructConfig
   char WifiPsw[32] = {0};             // WiFi password
   char HostURL[64] = {0};             // URL of the HTTP->HTTPs redirect host
   char ScriptID[64] = {0};            // Google script ID
-  unsigned short SampleInterval = 1;  // Time between samples (1 to 65535 seconds)
+  unsigned short LogInterval = 1;     // Time between samples (1 to 65535 seconds)
   unsigned short ErrorInterval = 1;   // Time to wait after on error (1 to 65535 seconds)
   int Timezone = 0;                   // Timezone (-12 to +12, 0 = GMT)
 } LogConfig, NewConfig;
@@ -250,7 +258,101 @@ void setup()
       Serial.println("Done.");     
       #endif       
 
-      // Open the config file
+      // Try to open new firmware file
+      UpdateFile = SDCard.open (UpdateFilename, FILE_READ);
+    
+      // Firmware file not found
+      if (!UpdateFile) 
+      {
+        #if DEBUG_SERIAL
+        Serial.printf ("[%05d] ", millis());
+        Serial.println("New firmware not detected.");     
+        #endif                            
+      }
+
+      // Firmware file was found
+      else
+      {        
+        #if DEBUG_SERIAL     
+        Serial.printf ("[%05d] ", millis());
+        Serial.println("New firmware file detected. Updating..."); 
+        #endif  
+
+        // LED on
+        digitalWrite (PIN_LED, LOW);
+
+        // Start update with max available SketchSpace
+        if (!Update.begin(((ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000), U_FLASH))
+        { 
+          Serial.printf ("[%05d] ", millis());
+          Serial.println("Invalid firmware file!");
+        }
+    
+        // Read all file bytes
+        else
+        {
+          while (UpdateFile.available())
+          {
+            unsigned char ibuffer[128];
+            UpdateFile.read((unsigned char *)ibuffer, 128);
+            Update.write(ibuffer, sizeof(ibuffer));
+          }   
+        }
+
+        // Close the file
+        UpdateFile.close();
+
+        // LED off
+        digitalWrite (PIN_LED, HIGH);
+          
+        // Update was successful
+        if (Update.end(true))
+        {
+          Serial.printf ("[%05d] ", millis());      
+          Serial.println("Success!");
+        }
+
+        // Error updating
+        else
+        {
+          Serial.printf ("[%05d] ", millis());      
+          Serial.println("Error updating!");
+
+          // Flash LED to inform user
+          FlashLED ();
+        }        
+
+        #if DEBUG_SERIAL     
+        Serial.printf ("[%05d] ", millis());
+        Serial.println("Deleting firmware file..."); 
+        #endif                     
+
+        // Delete firmware file
+        if (!SDCard.remove(UpdateFilename))
+        {
+          #if DEBUG_SERIAL     
+          Serial.printf ("[%05d] ", millis());
+          Serial.println("Error deleting firmware file!"); 
+          #endif  
+        }
+
+        #if DEBUG_SERIAL     
+        Serial.printf ("[%05d] ", millis());
+        Serial.println("Done."); 
+        #endif 
+    
+        #if DEBUG_SERIAL    
+        Serial.printf ("[%05d] ", millis());
+        Serial.println("Rebooting...");
+        #endif 
+    
+        // Reboot using GPIO16 (Tied to RST)
+        delay (250);
+        pinMode(16, OUTPUT);
+        digitalWrite(16, LOW);    
+      }    
+
+      // Try to open new config file
       ConfigFile = SDCard.open (ConfigFilename, FILE_READ);
     
       // Configuration file not found
@@ -280,7 +382,7 @@ void setup()
         #endif  
 
         // Get configuration values from SD card - Store in NewConfig
-        getConfigSD (NewConfig);
+        SDGetConfig (NewConfig);
 
         // Close the file
         ConfigFile.close();
@@ -297,7 +399,7 @@ void setup()
         Serial.printf ("[%05d] New log timezone: %d GMT \n", millis(), NewConfig.Timezone);  
         Serial.printf ("[%05d] New WiFi SSID: \'%s\' \n", millis(), NewConfig.WifiSSID);
         Serial.printf ("[%05d] New WiFi password: \'%s\' \n", millis(), NewConfig.WifiPsw);
-        Serial.printf ("[%05d] New sample interval: %d seconds \n", millis(), NewConfig.SampleInterval);
+        Serial.printf ("[%05d] New sample interval: %d seconds \n", millis(), NewConfig.LogInterval);
         Serial.printf ("[%05d] New wait on error: %d seconds \n", millis(), NewConfig.ErrorInterval);
         #endif        
 
@@ -348,7 +450,7 @@ void setup()
   Serial.printf ("[%05d] Log timezone: %d GMT \n", millis(), LogConfig.Timezone);  
   Serial.printf ("[%05d] WiFi SSID: \'%s\' \n", millis(), LogConfig.WifiSSID);
   Serial.printf ("[%05d] WiFi password: \'%s\' \n", millis(), LogConfig.WifiPsw);
-  Serial.printf ("[%05d] Sample interval: %d seconds \n", millis(), LogConfig.SampleInterval);
+  Serial.printf ("[%05d] Sample interval: %d seconds \n", millis(), LogConfig.LogInterval);
   Serial.printf ("[%05d] Wait on error: %d seconds \n", millis(), LogConfig.ErrorInterval);
   #endif  
 
@@ -672,11 +774,11 @@ void setup()
   {
     #if DEBUG_SERIAL
     Serial.printf ("[%05d] ", millis());    
-    Serial.printf("Running again in %d seconds... \n", LogConfig.SampleInterval);
+    Serial.printf("Running again in %d seconds... \n", LogConfig.LogInterval);
     #endif
     
     // Enter deep sleep
-    ESP.deepSleep(LogConfig.SampleInterval*1e6);     
+    ESP.deepSleep(LogConfig.LogInterval*1e6);     
   }
 }
 
@@ -725,17 +827,127 @@ void FlashLED ()
   digitalWrite (PIN_LED, HIGH);  
 }
 
+/* ------------------------------------------------------------------------------------------- */
+// Name:        SDGetConfig
+// Description: Gets all the configuration variables from SD card (ConfigFilename)
+// Arguments:   Buffer - Pointer to the buffer struct
+// Returns:     None
+/* ------------------------------------------------------------------------------------------- */
 
+void SDGetConfig (StructConfig &Buffer)
+{
+  // Line buffer
+  char BufferLine[100];
 
+  // End of line index position
+  unsigned char EOLPos;
 
+  // Read all lines of file sequentially
+  while ((EOLPos = ConfigFile.fgets(BufferLine, sizeof(BufferLine))) > 0) 
+  {
+    // Proccess only lines that contain variables
+    if (BufferLine[0] == '$')
+    {
+      // Current line is $Filename
+      if (strstr (BufferLine, "$Filename ")) 
+      { 
+        // Start index to extract text    
+        unsigned char StartPos = 10;
 
+        // Copy value to new config buffer from StartPos to '\n'
+        strncpy (Buffer.Filename, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+      }
 
+      // Current line is $HostURL
+      else if (strstr (BufferLine, "$HostURL "))   
+      { 
+        // Start index to extract text    
+        unsigned char StartPos = 9;
 
+        // Copy value to buffer from StartPos to '\n'
+        strncpy (Buffer.HostURL, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+      }
 
+      // Current line is $ScriptID                          
+      else if (strstr (BufferLine, "$ScriptID "))
+      { 
+        // Start index to extract text    
+        unsigned char StartPos = 10;
 
+        // Copy value to buffer from StartPos to '\n'
+        strncpy (Buffer.ScriptID, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+      }
 
+      // Current line is $WifiSSID                  
+      else if (strstr (BufferLine, "$WifiSSID "))
+      { 
+        // Start index to extract text    
+        unsigned char StartPos = 10;
+        
+        // Copy value to buffer from StartPos to '\n'
+        strncpy (Buffer.WifiSSID, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+      }
 
+      // Current line is $WifiPsw                
+      else if (strstr (BufferLine, "$WifiPsw ")) 
+      { 
+        // Start index to extract text    
+        unsigned char StartPos = 9;
 
+        // Copy value to buffer from StartPos to '\n'
+        strncpy (Buffer.WifiPsw, (BufferLine + StartPos), (EOLPos - StartPos - 1));     
+      }
+
+      // Current line is $Timezone
+      else if (strstr (BufferLine, "$Timezone "))
+      { 
+        // Start index to extract text    
+        unsigned char StartPos = 10;
+
+        // Buffer
+        char Value[8] = {0};
+
+        // Copy value to buffer from StartPos to '\n'
+        strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+
+        // Convert value to number
+        Buffer.Timezone = atoi(Value);       
+      }
+      
+      // Current line is $LogInterval      
+      else if (strstr (BufferLine, "$LogInterval "))
+      { 
+        // Start index to extract text    
+        unsigned char StartPos = 12;
+
+        // Buffer
+        char Value[8] = {0};
+
+        // Copy value to buffer from StartPos to '\n'
+        strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+
+        // Convert value to number
+        Buffer.LogInterval = atoi(Value);    
+      }
+      
+      // Current line is $ErrorInterval   
+      else if (strstr (BufferLine, "$ErrorInterval "))
+      { 
+        // Start index to extract text    
+        unsigned char StartPos = 15;
+
+        // Buffer
+        char Value[8] = {0};
+
+        // Copy value to buffer from StartPos to '\n'
+        strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+
+        // Convert value to number
+        Buffer.ErrorInterval = atoi(Value);                  
+      }
+    }
+  }
+}
 
 /* ------------------------------------------------------------------------------------------- */
 // Name:        EEPROMGetConfig
@@ -753,7 +965,7 @@ void EEPROMGetConfig (StructConfig &Buffer)
   EEPROMGetWifiSSID (Buffer.WifiSSID);
   EEPROMGetWifiPsw (Buffer.WifiPsw);
   EEPROMGetTimezone (&Buffer.Timezone);
-  EEPROMGetSampleInterval (&Buffer.SampleInterval);
+  EEPROMGetLogInterval (&Buffer.LogInterval);
   EEPROMGetErrorInterval (&Buffer.ErrorInterval); 
 }
 
@@ -773,7 +985,7 @@ void EEPROMSetConfig (StructConfig &Buffer)
   EEPROMSetWifiSSID (Buffer.WifiSSID);
   EEPROMSetWifiPsw (Buffer.WifiPsw);
   EEPROMSetTimezone (Buffer.Timezone);
-  EEPROMSetSampleInterval (Buffer.SampleInterval);
+  EEPROMSetLogInterval (Buffer.LogInterval);
   EEPROMSetErrorInterval (Buffer.ErrorInterval); 
 }
 
@@ -1003,26 +1215,26 @@ void EEPROMSetTimezone (int Timezone)
 }
 
 /* ------------------------------------------------------------------------------------------- */
-// Name:        EEPROMGetSampleInterval
+// Name:        EEPROMGetLogInterval
 // Description: Gets the Log sample interval value from EEPROM
 // Arguments:   Interval - Pointer to the buffer variable (unsigned short)
 // Returns:     None
 /* ------------------------------------------------------------------------------------------- */
 
-void EEPROMGetSampleInterval (unsigned short *Interval)
+void EEPROMGetLogInterval (unsigned short *Interval)
 {
   // Read upper and lower bytes of Interval
   *Interval = ((EEPROM.read (ADDR_TIME_SAMPLE)) << 8) | (EEPROM.read (ADDR_TIME_SAMPLE + 1));
 }
 
 /* ------------------------------------------------------------------------------------------- */
-// Name:        EEPROMSetSampleInterval
+// Name:        EEPROMSetLogInterval
 // Description: Writes the Log sample interval value in EEPROM
 // Arguments:   Interval - Value to be written (unsigned short)
 // Returns:     None
 /* ------------------------------------------------------------------------------------------- */
 
-void EEPROMSetSampleInterval (unsigned short Interval)
+void EEPROMSetLogInterval (unsigned short Interval)
 {
   // Write upper and lower bytes of Interval
   EEPROM.write (ADDR_TIME_SAMPLE, Interval >> 8);
@@ -1065,119 +1277,3 @@ void EEPROMSetErrorInterval (unsigned int Interval)
 /* ------------------------------------------------------------------------------------------- */
 // End of code
 /* ------------------------------------------------------------------------------------------- */
-
-
-void getConfigSD (StructConfig &Buffer)
-{
-  // Line buffer
-  char BufferLine[100];
-
-  // End of line index position
-  unsigned char EOLPos;
-
-  // Read all lines of file sequentially
-  while ((EOLPos = ConfigFile.fgets(BufferLine, sizeof(BufferLine))) > 0) 
-  {
-    // Proccess only lines that contain variables
-    if (BufferLine[0] == '$')
-    {
-      // Current line is $Filename
-      if (strstr (BufferLine, "$Filename ")) 
-      { 
-        // Start index to extract text    
-        unsigned char StartPos = 10;
-
-        // Copy value to new config buffer from StartPos to '\n'
-        strncpy (Buffer.Filename, (BufferLine + StartPos), (EOLPos - StartPos - 1));
-      }
-
-      // Current line is $HostURL
-      else if (strstr (BufferLine, "$HostURL "))   
-      { 
-        // Start index to extract text    
-        unsigned char StartPos = 9;
-
-        // Copy value to buffer from StartPos to '\n'
-        strncpy (Buffer.HostURL, (BufferLine + StartPos), (EOLPos - StartPos - 1));
-      }
-
-      // Current line is $ScriptID                          
-      else if (strstr (BufferLine, "$ScriptID "))
-      { 
-        // Start index to extract text    
-        unsigned char StartPos = 10;
-
-        // Copy value to buffer from StartPos to '\n'
-        strncpy (Buffer.ScriptID, (BufferLine + StartPos), (EOLPos - StartPos - 1));
-      }
-
-      // Current line is $WifiSSID                  
-      else if (strstr (BufferLine, "$WifiSSID "))
-      { 
-        // Start index to extract text    
-        unsigned char StartPos = 10;
-        
-        // Copy value to buffer from StartPos to '\n'
-        strncpy (Buffer.WifiSSID, (BufferLine + StartPos), (EOLPos - StartPos - 1));
-      }
-
-      // Current line is $WifiPsw                
-      else if (strstr (BufferLine, "$WifiPsw ")) 
-      { 
-        // Start index to extract text    
-        unsigned char StartPos = 9;
-
-        // Copy value to buffer from StartPos to '\n'
-        strncpy (Buffer.WifiPsw, (BufferLine + StartPos), (EOLPos - StartPos - 1));
-      }
-
-      // Current line is $Timezone
-      else if (strstr (BufferLine, "$Timezone "))
-      { 
-        // Start index to extract text    
-        unsigned char StartPos = 10;
-
-        // Buffer
-        char Value[8] = {0};
-
-        // Copy value to buffer from StartPos to '\n'
-        strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
-
-        // Convert value to number
-        Buffer.Timezone = atoi(Value);
-      }
-      
-      // Current line is $SampleInterval      
-      else if (strstr (BufferLine, "$SampleInterval "))
-      { 
-        // Start index to extract text    
-        unsigned char StartPos = 16;
-
-        // Buffer
-        char Value[8] = {0};
-
-        // Copy value to buffer from StartPos to '\n'
-        strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
-
-        // Convert value to number
-        Buffer.SampleInterval = atoi(Value);        
-      }
-      
-      // Current line is $ErrorInterval   
-      else if (strstr (BufferLine, "$ErrorInterval "))
-      { 
-        // Start index to extract text    
-        unsigned char StartPos = 15;
-
-        // Buffer
-        char Value[8] = {0};
-
-        // Copy value to buffer from StartPos to '\n'
-        strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
-
-        // Convert value to number
-        Buffer.ErrorInterval = atoi(Value);        
-      }
-    }
-  }
-}

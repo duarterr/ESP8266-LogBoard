@@ -1,0 +1,48 @@
+// ------------------------------------------------------------------------------------------------------ //
+// Spreadsheet IDs
+// ------------------------------------------------------------------------------------------------------ //
+
+// Logger spreadsheet ID
+var Logger_Spreadsheet = SpreadsheetApp.openById('YOUR GSHEETS ID');
+
+// Log sheet
+var Log_Raw_Sheet = Logger_Spreadsheet.getSheetByName("Sheet name to append data");
+
+// ------------------------------------------------------------------------------------------------------ //
+// Spreadsheet related functions
+// ------------------------------------------------------------------------------------------------------ //
+
+// Post request - To save data into Log_Raw_Sheet
+function doPost(e)
+{  
+  // Get parameter "value" from script Url
+  var Value = e.parameter.value;
+  
+  // Get timestamp
+  var Time_Stamp = new Date();
+    
+  // No value passed as argument to script Url.
+  if (e.parameter.value === undefined)
+    return ContentService.createTextOutput("0");
+  
+  // Get last edited row from Current_Sheet sheet
+  var Current_Row = Log_Raw_Sheet.getLastRow() + 1;
+  
+  // Write event index
+  Log_Raw_Sheet.getRange("A" + Current_Row).setValue(Current_Row - 2);
+  
+  // Write TimeStamp
+  Log_Raw_Sheet.getRange("B" + Current_Row).setValue(Time_Stamp);
+  
+  // Write value
+  var Range = Log_Raw_Sheet.getRange("C" + Current_Row);
+  var Cell_Value = Range.setValue(Value).getValue();    
+    
+  // Success
+  if (Cell_Value == e.parameter.value)
+    return ContentService.createTextOutput("1");
+
+  // Fail
+  else
+    return ContentService.createTextOutput("2");
+}
