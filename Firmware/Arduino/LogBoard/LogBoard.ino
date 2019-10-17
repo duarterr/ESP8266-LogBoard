@@ -16,10 +16,12 @@
 // Code workflow: 
 // (1) Init EEPROM
 // (2) SD card present? -  N: Log only via Wifi. Load config from EEPROM
-//                         Y1: SD has new firmware file? -  N: Move on
-//                                                          Y: Update firmare
-//                         Y2: SD has new config file? -  N: Load config from EEPROM
-//                                                        Y: Save to EEPROM. Delete config file
+//                         Y: SD has new firmware file? -  N: Move on
+//                                                         Y: Update firmare
+//                                                            Get NTP time and update RTC
+//                            SD has new config file? -  N: Load config from EEPROM
+//                                                       Y: Save to EEPROM. Delete config file
+//                                                          Get NTP time and update RTC
 // (3) Start wifi connection                                                  
 // (4) Start peripherals
 // (5) Sample data
@@ -44,6 +46,12 @@
 
 // ESP8266 HTTP client related functions
 #include <ESP8266HTTPClient.h>
+
+// ESP8266 UDP related functions
+#include <WiFiUdp.h>
+
+// NTP client related functions
+#include <NTPClient.h>
 
 // EEPROM module related functions
 #include <EEPROM.h>
@@ -77,6 +85,9 @@ const PROGMEM char* ConfigFilename = "NewConfig.txt";
 // Default firmware file
 const PROGMEM char* UpdateFilename = "NewFirmware.bin";
 
+// NTP server - Result is given by server closest to you, so it's usually in your timezone
+const PROGMEM char* NTPServerURL = "0.br.pool.ntp.org";  // Brazilian server
+
 // Code debug with serial port
 #define DEBUG_SERIAL            true
 
@@ -95,6 +106,7 @@ const PROGMEM char* UpdateFilename = "NewFirmware.bin";
 #define ADDR_WIFI_PSW           ADDR_WIFI_SSID + 32   // 32 bytes max (+ '\n')
 #define ADDR_TIME_SAMPLE        ADDR_WIFI_PSW + 32    // 2 bytes max 
 #define ADDR_TIME_ERROR         ADDR_TIME_SAMPLE + 2  // 2 bytes max 
+#define ADDR_RTC_PENDING        ADDR_TIME_ERROR + 2   // 1 byte
 
 /* ------------------------------------------------------------------------------------------- */
 // Constructors
@@ -120,6 +132,12 @@ File LogFile;
     
 // HTTP client
 HTTPClient LogClient;
+
+// UDP
+WiFiUDP UDP;
+
+// NTP client
+NTPClient NTP(UDP, NTPServerURL);
 
 /* ------------------------------------------------------------------------------------------- */
 // Global variables
@@ -191,7 +209,7 @@ void setup()
   #endif
   
   // Init EEPROM
-  EEPROM.begin(ADDR_TIME_ERROR + 2);
+  EEPROM.begin (ADDR_RTC_PENDING + 1);
 
   #if DEBUG_SERIAL 
   Serial.printf ("[%05d] ", millis());
@@ -284,8 +302,10 @@ void setup()
         // Start update with max available SketchSpace
         if (!Update.begin(((ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000), U_FLASH))
         { 
+          #if DEBUG_SERIAL            
           Serial.printf ("[%05d] ", millis());
           Serial.println("Invalid firmware file!");
+          #endif            
         }
     
         // Read all file bytes
@@ -308,15 +328,22 @@ void setup()
         // Update was successful
         if (Update.end(true))
         {
+          // Set RTCPending flag to update RTC time - Saved in EEPROM in case update fails in this run
+          EEPROMSetRTCPending (true);          
+          
+          #if DEBUG_SERIAL  
           Serial.printf ("[%05d] ", millis());      
           Serial.println("Success!");
+          #endif
         }
 
         // Error updating
         else
         {
+          #if DEBUG_SERIAL  
           Serial.printf ("[%05d] ", millis());      
           Serial.println("Error updating!");
+          #endif
 
           // Flash LED to inform user
           FlashLED ();
@@ -412,7 +439,10 @@ void setup()
         EEPROMSetConfig (NewConfig);
 
         // Get configuration values from EEPROM
-        EEPROMGetConfig (LogConfig);          
+        EEPROMGetConfig (LogConfig);
+
+        // Set RTCPending flag to update RTC time - Saved in EEPROM in case update fails in this run
+        EEPROMSetRTCPending (true);
 
         #if DEBUG_SERIAL     
         Serial.printf ("[%05d] ", millis());
@@ -458,7 +488,7 @@ void setup()
 
   #if DEBUG_SERIAL 
   Serial.printf ("[%05d] ", millis()); 
-  Serial.println ("Connecting to WiFi...");
+  Serial.println ("Starting WiFi connection...");
   #endif
 
   // Start WiFi connection
@@ -752,6 +782,55 @@ void setup()
   }          
   
   /* ----------------------------------------------------------------------------------------- */   
+
+  // RTC time needs to be updated
+  if (EEPROMGetRTCPending ()) 
+  {
+    // WiFi is connected
+    if (LogToWifi)
+    {
+      #if DEBUG_SERIAL       
+      Serial.printf ("[%05d] ", millis());
+      Serial.println ("RTC time update is pending. Updating..."); 
+      #endif
+           
+      // Start NTP client
+      NTP.begin(); 
+
+      // Get NTP time
+      if (NTP.update())
+      { 
+        // Update DS1390 time using NTP Epoch timestamp
+        RTC.setDateTimeEpoch (NTP.getEpochTime(), LogConfig.Timezone);    
+
+        // Reset update pending flag
+        EEPROMSetRTCPending (false);
+        
+        #if DEBUG_SERIAL       
+        Serial.printf ("[%05d] ", millis());
+        Serial.println ("Done."); 
+        #endif                      
+      }
+
+      else
+      {
+        #if DEBUG_SERIAL       
+        Serial.printf ("[%05d] ", millis());
+        Serial.println ("Error getting data from NTC server!"); 
+        #endif        
+      }
+    }
+
+    else
+    {
+      #if DEBUG_SERIAL       
+      Serial.printf ("[%05d] ", millis());
+      Serial.println ("RTC time update is pending but WiFi is not available!"); 
+      #endif      
+    }
+  }
+
+  /* ----------------------------------------------------------------------------------------- */
 
   // Battery voltage is low
   if (Sample.BatteryVoltage < VBAT_LOW)
@@ -1277,3 +1356,32 @@ void EEPROMSetErrorInterval (unsigned int Interval)
 /* ------------------------------------------------------------------------------------------- */
 // End of code
 /* ------------------------------------------------------------------------------------------- */
+
+/* ------------------------------------------------------------------------------------------- */
+// Name:        EEPROMGetRTCPending
+// Description: Gets the RTCPending flag value from EEPROM
+// Arguments:   None
+// Returns:     Flag value
+/* ------------------------------------------------------------------------------------------- */
+
+bool EEPROMGetRTCPending ()
+{
+  // Read upper and lower bytes of Interval
+  return EEPROM.read (ADDR_RTC_PENDING);
+}
+
+/* ------------------------------------------------------------------------------------------- */
+// Name:        EEPROMSetRTCPending
+// Description: Writes the RTCPending flag value in EEPROM
+// Arguments:   Flag value
+// Returns:     None
+/* ------------------------------------------------------------------------------------------- */
+
+void EEPROMSetRTCPending (bool Value)
+{
+  // Write upper and lower bytes of Interval
+  EEPROM.write (ADDR_RTC_PENDING, Value);
+
+  // Apply changes in EEPROM
+  EEPROM.commit();
+}
