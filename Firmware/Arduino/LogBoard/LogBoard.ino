@@ -73,7 +73,7 @@ using namespace sdfat;
 #define PIN_ADC                 A0
 
 // ADC gain
-#define ADC_GAIN                0.005311198
+#define ADC_GAIN                0.005343342
 
 /* ------------------------------------------------------------------------------------------- */
 // Software defines
@@ -521,27 +521,22 @@ void setup()
   Serial.printf ("[%05d] ", millis());
   Serial.println("Configuring DS1390...");
   #endif
-
-  // Set DS1390 trickle charger mode (250 ohms with one series diode)
-  RTC.setTrickleChargerMode (DS1390_TCH_250_D); 
     
   // Delay for DS1390 boot (mandatory)
   delay (200);
 
-  #if DEBUG_SERIAL 
-  Serial.printf ("[%05d] ", millis());
-  Serial.println("Done.");
-  #endif  
-
   // Check if memory was lost recently
   Sample.TimeValid = RTC.getValidation ();
 
-  // Unreliable RTC data - Proceed anyway
+  // Unreliable RTC data
   if (!Sample.TimeValid)
   {
+    // Set RTCPending flag to update RTC time - Saved in EEPROM in case update fails in this run
+    EEPROMSetRTCPending (true);          
+              
     #if DEBUG_SERIAL  
     Serial.printf ("[%05d] ", millis());
-    Serial.println ("RTC memory content was recently lost! Please update date and time values.");  
+    Serial.println ("RTC memory content was recently lost!");  
     #endif         
   }
   
@@ -553,6 +548,14 @@ void setup()
     Serial.println ("RTC memory content is valid.");
     #endif      
   }
+
+  // Set DS1390 trickle charger mode (250 ohms with one series diode)
+  RTC.setTrickleChargerMode (DS1390_TCH_250_D);   
+
+  #if DEBUG_SERIAL 
+  Serial.printf ("[%05d] ", millis());
+  Serial.println("Done.");
+  #endif    
 
   /* ----------------------------------------------------------------------------------------- */  
 
@@ -773,14 +776,9 @@ void setup()
     #if DEBUG_SERIAL       
     Serial.printf ("[%05d] ", millis());
     Serial.println ("Data was not saved!");
-    Serial.printf ("[%05d] ", millis());  
-    Serial.printf ("Trying again in %d seconds... \n", LogConfig.ErrorInterval);
     #endif       
+  }
 
-    // Call error function
-    RunOnError ();
-  }          
-  
   /* ----------------------------------------------------------------------------------------- */   
 
   // RTC time needs to be updated
@@ -849,16 +847,29 @@ void setup()
     ESP.deepSleep(0);  
   }
 
-  else
+  /* ----------------------------------------------------------------------------------------- */
+  
+  // Data was not saved
+  if (!LogWifiSuccess && !LogSDSuccess)
   {
-    #if DEBUG_SERIAL
-    Serial.printf ("[%05d] ", millis());    
-    Serial.printf("Running again in %d seconds... \n", LogConfig.LogInterval);
-    #endif
+    #if DEBUG_SERIAL     
+    Serial.printf ("[%05d] ", millis());  
+    Serial.printf ("Trying again in %d seconds... \n", LogConfig.ErrorInterval);
+    #endif      
     
-    // Enter deep sleep
-    ESP.deepSleep(LogConfig.LogInterval*1e6);     
+    // Call error function
+    RunOnError ();        
   }
+
+  /* ----------------------------------------------------------------------------------------- */
+
+  #if DEBUG_SERIAL
+  Serial.printf ("[%05d] ", millis());    
+  Serial.printf("Next update in %d seconds... \n", LogConfig.LogInterval);
+  #endif
+  
+  // Enter deep sleep
+  ESP.deepSleep(LogConfig.LogInterval*1e6);           
 }
 
 /* ------------------------------------------------------------------------------------------- */
@@ -990,7 +1001,7 @@ void SDGetConfig (StructConfig &Buffer)
         strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
 
         // Convert value to number
-        Buffer.Timezone = atoi(Value);       
+        Buffer.Timezone = constrain(atoi(Value), -12, 12);       
       }
       
       // Current line is $LogInterval      
@@ -1006,7 +1017,7 @@ void SDGetConfig (StructConfig &Buffer)
         strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
 
         // Convert value to number
-        Buffer.LogInterval = atoi(Value);    
+        Buffer.LogInterval = constrain(atoi(Value), 1, 65535);    
       }
       
       // Current line is $ErrorInterval   
@@ -1022,7 +1033,7 @@ void SDGetConfig (StructConfig &Buffer)
         strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
 
         // Convert value to number
-        Buffer.ErrorInterval = atoi(Value);                  
+        Buffer.ErrorInterval = constrain(atoi(Value), 1, 65535);                  
       }
     }
   }
@@ -1285,6 +1296,9 @@ void EEPROMGetTimezone (int *Timezone)
 
 void EEPROMSetTimezone (int Timezone)
 {
+  // Contrain value
+  Timezone = constrain (Timezone, -12, 12);
+  
   // Write upper and lower bytes of Timezone
   EEPROM.write (ADDR_TIMEZONE, Timezone >> 8);
   EEPROM.write (ADDR_TIMEZONE + 1, Timezone & 0xFF);
@@ -1315,6 +1329,9 @@ void EEPROMGetLogInterval (unsigned short *Interval)
 
 void EEPROMSetLogInterval (unsigned short Interval)
 {
+  // Contrain value	
+  Interval = constrain (Interval, 0, 65535);
+  
   // Write upper and lower bytes of Interval
   EEPROM.write (ADDR_TIME_SAMPLE, Interval >> 8);
   EEPROM.write (ADDR_TIME_SAMPLE + 1, Interval & 0xFF);
@@ -1345,6 +1362,9 @@ void EEPROMGetErrorInterval (unsigned short *Interval)
 
 void EEPROMSetErrorInterval (unsigned int Interval)
 {
+  // Contrain value	
+  Interval = constrain (Interval, 0, 65535);
+  
   // Write upper and lower bytes of Interval
   EEPROM.write (ADDR_TIME_ERROR, Interval >> 8);
   EEPROM.write (ADDR_TIME_ERROR + 1, Interval & 0xFF);
