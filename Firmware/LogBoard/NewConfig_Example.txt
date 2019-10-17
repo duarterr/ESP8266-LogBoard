@@ -1,0 +1,32 @@
+ESP8266 LogBoard configuration file
+Use this file as an example and save it as NewConfig.txt to apply the settings
+NewConfig.txt will be deleted after the new configuration is applied
+
+Edit only the values after the variable name. Do not modify any other part of this file!
+Values are separated from variable names by a space.
+
+// File in which the data will be saved. Must have extension
+$Filename Log.csv
+
+// URL of the HTTPS -> HTTP redirect host
+$HostURL http://host.com/
+
+// Google script ID 
+$ScriptID YourGScriptID
+
+// WiFi SSID
+$WifiSSID Your WiFi SSID
+
+// WiFi password
+$WifiPsw Your WiFi Psw
+
+// Timezone (-12 to +12, 0 = GMT)
+$Timezone -3
+
+// Time between samples (1 to 65535 seconds)
+$SampleInterval 30
+
+// Time to wait after on error (1 to 65535 seconds)
+$ErrorInterval 30
+
+End of file.

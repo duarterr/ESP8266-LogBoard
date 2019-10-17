@@ -4,7 +4,7 @@
 // E-mail:  duarte.renan@hotmail.com
 // Date:    October 14, 2019
 //
-// Notes:   Sending data to Google Sheets (via Google Script) can be done directly using the
+// Notes:   Sending data to Google Sheets (via Google Script) could be done directly using the
 //          WiFiClientSecure library. However, HTTPS requests require more heap memory than
 //          the device has available in this code when the HTTPS connection is made.
 //          As a solution, this code sends an HTTP request to a server where a HTTPs redirect
@@ -14,17 +14,17 @@
 /* ------------------------------------------------------------------------------------------- */
 //
 // Code workflow: 
-// (1) Init
-// (2) Check for SD card -  N: Only Wifi, load last config from EEPROM
-//                          Y: Check for new config file -  N: Load last from EEPROM
-//                                                          Y: Save to EEPROM, delete config file
+// (1) Init EEPROM
+// (2) SD card present? -  N: Log only via Wifi. Load config from EEPROM
+//                         Y: SD has new config file? -  N: Load config from EEPROM
+//                                                       Y: Save to EEPROM. Delete config file
 // (3) Start wifi connection                                                  
 // (4) Start peripherals
 // (5) Sample data
-// (6) Check wifi connection -  Y: Post data - Get result
-//                              N: Save to SD card if present
-// (7) Check Vbat -   Normal: Sleep TIME_SAMPLE                          
-//                    Low: Sleep forever
+// (6) WiFi connected? -  Y: Post data - Get result
+//                        N: Save to SD card if present
+// (7) Vbat < VBAT_LOW? - Y: Low: Sleep forever
+//                        N: Normal: Sleep TIME_SAMPLE
 /* ------------------------------------------------------------------------------------------- */
 
 /* ------------------------------------------------------------------------------------------- */
@@ -69,11 +69,17 @@ using namespace sdfat;
 // Software defines
 /* ------------------------------------------------------------------------------------------- */
 
+// Default configuration file
+const PROGMEM char* ConfigFilename = "NewConfig.txt";
+
 // Code debug with serial port
 #define DEBUG_SERIAL            true
 
 // WiFi connection timeout (seconds)
 #define WIFI_TIMEOUT            5
+
+// Battery voltage cutoff voltage (volts)
+#define VBAT_LOW                3
 
 // EEPROM addresses
 #define ADDR_FILENAME           0                     // 64 bytes max (+ '\n')
@@ -96,7 +102,7 @@ DS1722 TS (PIN_TS_CS);
 DS1390 RTC (PIN_RTC_CS);
 
 // SD card
-SdFat SD;
+SdFat SDCard;
 
 // Configuration file
 File ConfigFile;
@@ -111,45 +117,28 @@ HTTPClient LogClient;
 // Global variables
 /* ------------------------------------------------------------------------------------------- */
 
-// Configuration file
-const PROGMEM char* ConfigFilename = "NewConfig.csv";
-
-// Configuration variables structure
+// Structure to store the configuration variables 
 struct StructConfig
 {
-  // Log file
-  char Filename[64] = {0};
-      
-  // Wifi settings
-  char WifiSSID[32] = {0};
-  char WifiPsw[32] = {0};
-  
-  // Google script settings
-  char HostURL[64] = {0};
-  char ScriptID[64] = {0};
-  
-  // Time between samples (seconds) - Max 65535
-  unsigned short SampleInterval = 0;
-  
-  // Deep sleep time if error (seconds) - Max 65535
-  unsigned short ErrorInterval = 0;
-  
-  // Timezone (-12 to +12, 0 = GMT)
-  int Timezone = 0;
-} LogConfig;
-   
-// DS1722 temperature
-float SensorTemperature = 0;
+  char Filename[64] = {0};            // Log file    
+  char WifiSSID[32] = {0};            // WiFi SSID
+  char WifiPsw[32] = {0};             // WiFi password
+  char HostURL[64] = {0};             // URL of the HTTP->HTTPs redirect host
+  char ScriptID[64] = {0};            // Google script ID
+  unsigned short SampleInterval = 1;  // Time between samples (1 to 65535 seconds)
+  unsigned short ErrorInterval = 1;   // Time to wait after on error (1 to 65535 seconds)
+  int Timezone = 0;                   // Timezone (-12 to +12, 0 = GMT)
+} LogConfig, NewConfig;
 
-// ADC voltage
-float BatteryVoltage = 0;
+// Structure to store sampled data
+struct StructSample
+{
+  float Temperature = 0;              // DS1722 temperature
+  float BatteryVoltage = 0;           // ADC voltage
+  unsigned long TimeEpoch = 0;        // RTC date and time - Epoch format
+  bool TimeValid = false;             // RTC data valid flag
+} Sample;
 
-// Date and time - Epoch format
-unsigned long EpochTime = 0;
-
-// RTC data valid flag
-bool RTCDataValid = false;
-  
 // Log flags
 bool LogToSD = false;
 bool LogToWifi = false;
@@ -161,7 +150,7 @@ bool LogWifiSuccess = false;
 // WiFi connection counter
 unsigned char ConnectionCounter = 0;
 
-// Log string
+// Log buffer
 char Buffer[200] = {0};
 
 /* ------------------------------------------------------------------------------------------- */
@@ -211,8 +200,8 @@ void setup()
   // Card detect pin
   pinMode(PIN_SD_CD, INPUT_PULLUP);
 
-  // Check for SD card
-  LogToSD = SDCardPresent();
+  // Check for SD card using Card Detect pin 
+  LogToSD = !digitalRead (PIN_SD_CD);
 
   // SD card was not detected
   if (!LogToSD)
@@ -236,7 +225,7 @@ void setup()
   else
   {
     // Fails to initialize SD card
-    if (!SD.begin(PIN_SD_CS)) 
+    if (!SDCard.begin(PIN_SD_CS)) 
     {
        #if DEBUG_SERIAL     
       Serial.printf ("[%05d] ", millis());
@@ -262,14 +251,14 @@ void setup()
       #endif       
 
       // Open the config file
-      ConfigFile = SD.open (ConfigFilename, FILE_READ);
+      ConfigFile = SDCard.open (ConfigFilename, FILE_READ);
     
       // Configuration file not found
-      if (!LogFile) 
+      if (!ConfigFile) 
       {
         #if DEBUG_SERIAL
         Serial.printf ("[%05d] ", millis());
-        Serial.println("New configuration file not found.");     
+        Serial.println("New configuration file not detected.");     
         #endif                  
         
         // Get configuration values from EEPROM
@@ -284,23 +273,68 @@ void setup()
 
       // Configuration file was found
       else
-      {
-        // Get configuration values from SD card
+      {        
         #if DEBUG_SERIAL     
         Serial.printf ("[%05d] ", millis());
-        Serial.println("Getting new configuration from SD card..."); 
+        Serial.println("New configuration file detected. Parsing new values..."); 
         #endif  
 
-        // Save values to EEPROM
+        // Get configuration values from SD card - Store in NewConfig
+        getConfigSD (NewConfig);
+
+        // Close the file
+        ConfigFile.close();
         
+        #if DEBUG_SERIAL     
+        Serial.printf ("[%05d] ", millis());
+        Serial.println("Done."); 
+        #endif  
+        
+        #if DEBUG_SERIAL 
+        Serial.printf ("[%05d] New log filename: \'%s\' \n", millis(), NewConfig.Filename);
+        Serial.printf ("[%05d] New log host: \'%s\' \n", millis(), NewConfig.HostURL);
+        Serial.printf ("[%05d] New log script ID: \'%s\' \n", millis(), NewConfig.ScriptID);
+        Serial.printf ("[%05d] New log timezone: %d GMT \n", millis(), NewConfig.Timezone);  
+        Serial.printf ("[%05d] New WiFi SSID: \'%s\' \n", millis(), NewConfig.WifiSSID);
+        Serial.printf ("[%05d] New WiFi password: \'%s\' \n", millis(), NewConfig.WifiPsw);
+        Serial.printf ("[%05d] New sample interval: %d seconds \n", millis(), NewConfig.SampleInterval);
+        Serial.printf ("[%05d] New wait on error: %d seconds \n", millis(), NewConfig.ErrorInterval);
+        #endif        
+
+        #if DEBUG_SERIAL     
+        Serial.printf ("[%05d] ", millis());
+        Serial.println("Saving new values in EEPROM..."); 
+        #endif       
+
+        // Save new values in EEPROM
+        EEPROMSetConfig (NewConfig);
+
+        // Get configuration values from EEPROM
+        EEPROMGetConfig (LogConfig);          
+
+        #if DEBUG_SERIAL     
+        Serial.printf ("[%05d] ", millis());
+        Serial.println("Done."); 
+        #endif 
+
+        #if DEBUG_SERIAL     
+        Serial.printf ("[%05d] ", millis());
+        Serial.println("Deleting configuration file..."); 
+        #endif                     
+
         // Delete configuration file
-        if (!ConfigFile.remove())
+        if (!SDCard.remove(ConfigFilename))
         {
           #if DEBUG_SERIAL     
           Serial.printf ("[%05d] ", millis());
           Serial.println("Error deleting configuration file!"); 
           #endif  
         }
+
+        #if DEBUG_SERIAL     
+        Serial.printf ("[%05d] ", millis());
+        Serial.println("Done."); 
+        #endif    
       }
     }
   }
@@ -368,10 +402,10 @@ void setup()
   #endif  
 
   // Check if memory was lost recently
-  RTCDataValid = RTC.getValidation ();
+  Sample.TimeValid = RTC.getValidation ();
 
   // Unreliable RTC data - Proceed anyway
-  if (!RTCDataValid)
+  if (!Sample.TimeValid)
   {
     #if DEBUG_SERIAL  
     Serial.printf ("[%05d] ", millis());
@@ -394,21 +428,21 @@ void setup()
   digitalWrite (PIN_LED, LOW);
 
   // Calculate battery voltage
-  BatteryVoltage = analogRead(PIN_ADC)*ADC_GAIN;   
+  Sample.BatteryVoltage = analogRead(PIN_ADC)*ADC_GAIN;   
 
   // Get current time
-  EpochTime = RTC.getDateTimeEpoch (LogConfig.Timezone);
+  Sample.TimeEpoch = RTC.getDateTimeEpoch (LogConfig.Timezone);
   
   // Get DS172 temperature
-  SensorTemperature = TS.getTemperature();
+  Sample.Temperature = TS.getTemperature();
 
   // LED off
   digitalWrite (PIN_LED, HIGH);
     
   #if DEBUG_SERIAL  
-  Serial.printf ("[%05d] Epoch: %d \n", millis(), EpochTime);
-  Serial.printf ("[%05d] Vbat: %.4f V \n", millis(), BatteryVoltage);  
-  Serial.printf ("[%05d] Temperature: %.4f C \n", millis(), SensorTemperature);          
+  Serial.printf ("[%05d] Epoch: %d \n", millis(), Sample.TimeEpoch);
+  Serial.printf ("[%05d] Vbat: %.4f V \n", millis(), Sample.BatteryVoltage);  
+  Serial.printf ("[%05d] Temperature: %.4f C \n", millis(), Sample.Temperature);          
   #endif    
 
   /* ----------------------------------------------------------------------------------------- */  
@@ -470,7 +504,7 @@ void setup()
     #endif
   
     // Start HTTP client connection to host
-    LogClient.begin ((String)LogConfig.HostURL);
+    LogClient.begin (LogConfig.HostURL);
   
     // Define request timeout
     LogClient.setTimeout(5000);
@@ -486,9 +520,9 @@ void setup()
     Serial.println("Done.");   
     #endif
    
-    // Prepare log string
+    // Prepare log buffer
     snprintf (Buffer, sizeof(Buffer), "id=%s&log=EP:%010d-VB:%.4f-TS:%.4f-ST:%d-SD:%d", 
-        LogConfig.ScriptID, EpochTime, BatteryVoltage, SensorTemperature, RTCDataValid, LogToSD);     
+        LogConfig.ScriptID, Sample.TimeEpoch, Sample.BatteryVoltage, Sample.Temperature, Sample.TimeValid, LogToSD);     
   
     #if DEBUG_SERIAL
     Serial.printf ("[%05d] ", millis());  
@@ -535,7 +569,7 @@ void setup()
   if (LogToSD)
   {    
     // Open the log file
-    LogFile = SD.open(LogConfig.Filename, FILE_WRITE);
+    LogFile = SDCard.open(LogConfig.Filename, FILE_WRITE);
   
     // If the file opened okay, write to it
     if (LogFile) 
@@ -545,9 +579,9 @@ void setup()
       Serial.println ("Writing to SD card...");
       #endif    
 
-      // Prepare log string
+      // Prepare log buffer
       snprintf (Buffer, sizeof(Buffer), "%010d; %.4f;  %.4f; %d; %d", 
-          EpochTime, BatteryVoltage, SensorTemperature, RTCDataValid, LogWifiSuccess);
+          Sample.TimeEpoch, Sample.BatteryVoltage, Sample.Temperature, Sample.TimeValid, LogWifiSuccess);
          
       // Write to file
       LogFile.println(Buffer);
@@ -607,13 +641,18 @@ void setup()
     #if DEBUG_SERIAL       
     Serial.printf ("[%05d] ", millis());
     Serial.println ("Data was not saved!");
-    #endif      
+    Serial.printf ("[%05d] ", millis());  
+    Serial.printf ("Trying again in %d seconds... \n", LogConfig.ErrorInterval);
+    #endif       
+
+    // Call error function
+    RunOnError ();
   }          
   
   /* ----------------------------------------------------------------------------------------- */   
 
   // Battery voltage is low
-  if (BatteryVoltage < 3)
+  if (Sample.BatteryVoltage < VBAT_LOW)
   {
     #if DEBUG_SERIAL 
     Serial.printf ("[%05d] ", millis());
@@ -653,18 +692,6 @@ void loop ()
 }
 
 /* ------------------------------------------------------------------------------------------- */
-// Name:        SDCardPresent
-// Description: Verify if the SD card is present by checking the status of Card Detect pin
-// Arguments:   None
-// Returns:     true if card is present or false
-/* ------------------------------------------------------------------------------------------- */
-
-bool SDCardPresent ()
-{
-  return (!digitalRead(PIN_SD_CD));
-}
-
-/* ------------------------------------------------------------------------------------------- */
 // Name:        RunOnError
 // Description: This function is called when an error occur
 // Arguments:   None
@@ -673,11 +700,6 @@ bool SDCardPresent ()
 
 void RunOnError () 
 {
-#if DEBUG_SERIAL 
-  Serial.printf ("[%05d] ", millis());  
-  Serial.printf ("Going to sleep for %d seconds... \n", LogConfig.ErrorInterval);
-#endif     
-
   // Flash LED to inform user
   FlashLED ();
   
@@ -758,7 +780,7 @@ void EEPROMSetConfig (StructConfig &Buffer)
 /* ------------------------------------------------------------------------------------------- */
 // Name:        EEPROMGetLogFilename
 // Description: Gets the log filename from EEPROM
-// Arguments:   Buffer - Pointer to the buffer string (64 bytes)
+// Arguments:   Buffer - Pointer to the buffer array (64 bytes)
 // Returns:     None
 /* ------------------------------------------------------------------------------------------- */
 
@@ -775,7 +797,7 @@ void EEPROMGetLogFilename (char *Buffer)
 /* ------------------------------------------------------------------------------------------- */
 // Name:        EEPROMSetLogFilename
 // Description: Writes the log filename in EEPROM
-// Arguments:   Buffer - Pointer to the string to be written (64 bytes)
+// Arguments:   Buffer - Pointer to the array to be written (64 bytes)
 // Returns:     None
 /* ------------------------------------------------------------------------------------------- */
 
@@ -797,7 +819,7 @@ void EEPROMSetLogFilename (const char *Buffer)
 /* ------------------------------------------------------------------------------------------- */
 // Name:        EEPROMGetLogHost
 // Description: Gets the host url from EEPROM
-// Arguments:   Buffer - Pointer to the buffer string (64 bytes)
+// Arguments:   Buffer - Pointer to the buffer array (64 bytes)
 // Returns:     None
 /* ------------------------------------------------------------------------------------------- */
 
@@ -814,7 +836,7 @@ void EEPROMGetLogHost (char *Buffer)
 /* ------------------------------------------------------------------------------------------- */
 // Name:        EEPROMSetLogHost
 // Description: Writes the host url in EEPROM
-// Arguments:   Buffer - Pointer to the string to be written (64 bytes)
+// Arguments:   Buffer - Pointer to the array to be written (64 bytes)
 // Returns:     None
 /* ------------------------------------------------------------------------------------------- */
 
@@ -836,7 +858,7 @@ void EEPROMSetLogHost (const char *Buffer)
 /* ------------------------------------------------------------------------------------------- */
 // Name:        EEPROMGetScriptID
 // Description: Gets Google script ID from EEPROM
-// Arguments:   Buffer - Pointer to the buffer string (64 bytes)
+// Arguments:   Buffer - Pointer to the buffer array (64 bytes)
 // Returns:     None
 /* ------------------------------------------------------------------------------------------- */
 
@@ -853,7 +875,7 @@ void EEPROMGetScriptID (char *Buffer)
 /* ------------------------------------------------------------------------------------------- */
 // Name:        EEPROMSetScriptID
 // Description: Writes Google script ID in EEPROM
-// Arguments:   Buffer - Pointer to the string to be written (64 bytes)
+// Arguments:   Buffer - Pointer to the array to be written (64 bytes)
 // Returns:     None
 /* ------------------------------------------------------------------------------------------- */
 
@@ -875,7 +897,7 @@ void EEPROMSetScriptID (const char *Buffer)
 /* ------------------------------------------------------------------------------------------- */
 // Name:        EEPROMGetWifiSSID
 // Description: Gets the WiFi SSID from EEPROM
-// Arguments:   Buffer - Pointer to the buffer string (32 bytes)
+// Arguments:   Buffer - Pointer to the buffer array (32 bytes)
 // Returns:     None
 /* ------------------------------------------------------------------------------------------- */
 
@@ -892,7 +914,7 @@ void EEPROMGetWifiSSID (char *Buffer)
 /* ------------------------------------------------------------------------------------------- */
 // Name:        EEPROMSetWifiSSID
 // Description: Writes the WiFi SSID in EEPROM
-// Arguments:   Buffer - Pointer to the string to be written (32 bytes)
+// Arguments:   Buffer - Pointer to the array to be written (32 bytes)
 // Returns:     None
 /* ------------------------------------------------------------------------------------------- */
 
@@ -914,7 +936,7 @@ void EEPROMSetWifiSSID (const char *Buffer)
 /* ------------------------------------------------------------------------------------------- */
 // Name:        EEPROMGetWifiPsw
 // Description: Gets the WiFi password from EEPROM
-// Arguments:   Buffer - Pointer to the buffer string (32 bytes)
+// Arguments:   Buffer - Pointer to the buffer array (32 bytes)
 // Returns:     None
 /* ------------------------------------------------------------------------------------------- */
 
@@ -931,7 +953,7 @@ void EEPROMGetWifiPsw (char *Buffer)
 /* ------------------------------------------------------------------------------------------- */
 // Name:        EEPROMSetWifiPsw
 // Description: Writes the WiFi password in EEPROM
-// Arguments:   Buffer - Pointer to the string to be written (32 bytes)
+// Arguments:   Buffer - Pointer to the array to be written (32 bytes)
 // Returns:     None
 /* ------------------------------------------------------------------------------------------- */
 
@@ -1043,3 +1065,119 @@ void EEPROMSetErrorInterval (unsigned int Interval)
 /* ------------------------------------------------------------------------------------------- */
 // End of code
 /* ------------------------------------------------------------------------------------------- */
+
+
+void getConfigSD (StructConfig &Buffer)
+{
+  // Line buffer
+  char BufferLine[100];
+
+  // End of line index position
+  unsigned char EOLPos;
+
+  // Read all lines of file sequentially
+  while ((EOLPos = ConfigFile.fgets(BufferLine, sizeof(BufferLine))) > 0) 
+  {
+    // Proccess only lines that contain variables
+    if (BufferLine[0] == '$')
+    {
+      // Current line is $Filename
+      if (strstr (BufferLine, "$Filename ")) 
+      { 
+        // Start index to extract text    
+        unsigned char StartPos = 10;
+
+        // Copy value to new config buffer from StartPos to '\n'
+        strncpy (Buffer.Filename, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+      }
+
+      // Current line is $HostURL
+      else if (strstr (BufferLine, "$HostURL "))   
+      { 
+        // Start index to extract text    
+        unsigned char StartPos = 9;
+
+        // Copy value to buffer from StartPos to '\n'
+        strncpy (Buffer.HostURL, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+      }
+
+      // Current line is $ScriptID                          
+      else if (strstr (BufferLine, "$ScriptID "))
+      { 
+        // Start index to extract text    
+        unsigned char StartPos = 10;
+
+        // Copy value to buffer from StartPos to '\n'
+        strncpy (Buffer.ScriptID, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+      }
+
+      // Current line is $WifiSSID                  
+      else if (strstr (BufferLine, "$WifiSSID "))
+      { 
+        // Start index to extract text    
+        unsigned char StartPos = 10;
+        
+        // Copy value to buffer from StartPos to '\n'
+        strncpy (Buffer.WifiSSID, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+      }
+
+      // Current line is $WifiPsw                
+      else if (strstr (BufferLine, "$WifiPsw ")) 
+      { 
+        // Start index to extract text    
+        unsigned char StartPos = 9;
+
+        // Copy value to buffer from StartPos to '\n'
+        strncpy (Buffer.WifiPsw, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+      }
+
+      // Current line is $Timezone
+      else if (strstr (BufferLine, "$Timezone "))
+      { 
+        // Start index to extract text    
+        unsigned char StartPos = 10;
+
+        // Buffer
+        char Value[8] = {0};
+
+        // Copy value to buffer from StartPos to '\n'
+        strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+
+        // Convert value to number
+        Buffer.Timezone = atoi(Value);
+      }
+      
+      // Current line is $SampleInterval      
+      else if (strstr (BufferLine, "$SampleInterval "))
+      { 
+        // Start index to extract text    
+        unsigned char StartPos = 16;
+
+        // Buffer
+        char Value[8] = {0};
+
+        // Copy value to buffer from StartPos to '\n'
+        strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+
+        // Convert value to number
+        Buffer.SampleInterval = atoi(Value);        
+      }
+      
+      // Current line is $ErrorInterval   
+      else if (strstr (BufferLine, "$ErrorInterval "))
+      { 
+        // Start index to extract text    
+        unsigned char StartPos = 15;
+
+        // Buffer
+        char Value[8] = {0};
+
+        // Copy value to buffer from StartPos to '\n'
+        strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+
+        // Convert value to number
+        Buffer.ErrorInterval = atoi(Value);        
+      }
+    }
+  }
+}
