@@ -1,8 +1,9 @@
 /* ------------------------------------------------------------------------------------------- */
-// Logger - Data logger
+// LogBoard - Data logger firwmare for the ESP8266 LogBoard
+// Version: 1.0
 // Author:  Renan R. Duarte
 // E-mail:  duarte.renan@hotmail.com
-// Date:    October 14, 2019
+// Date:    October 18, 2019
 //
 // Notes:   Sending data to Google Sheets (via Google Script) could be done directly using the
 //          WiFiClientSecure library. However, HTTPS requests require more heap memory than
@@ -13,7 +14,7 @@
 // Released into the public domain
 /* ------------------------------------------------------------------------------------------- */
 //
-// Code workflow: 
+// Code workflow:
 // (1) Init EEPROM
 // (2) SD card present? -  N: Log only via Wifi. Load config from EEPROM
 //                         Y: SD has new firmware file? -  N: Move on
@@ -22,7 +23,7 @@
 //                            SD has new config file? -  N: Load config from EEPROM
 //                                                       Y: Save to EEPROM. Delete config file
 //                                                          Get NTP time and update RTC
-// (3) Start wifi connection                                                  
+// (3) Start wifi connection
 // (4) Start peripherals
 // (5) Sample data
 // (6) WiFi connected? -  Y: Post data - Get result
@@ -129,7 +130,7 @@ File UpdateFile;
 
 // Log file
 File LogFile;
-    
+
 // HTTP client
 HTTPClient LogClient;
 
@@ -143,10 +144,10 @@ NTPClient NTP(UDP, NTPServerURL);
 // Global variables
 /* ------------------------------------------------------------------------------------------- */
 
-// Structure to store the configuration variables 
+// Structure to store the configuration variables
 struct StructConfig
 {
-  char Filename[64] = {0};            // Log file    
+  char Filename[64] = {0};            // Log file
   char WifiSSID[32] = {0};            // WiFi SSID
   char WifiPsw[32] = {0};             // WiFi password
   char HostURL[64] = {0};             // URL of the HTTP->HTTPs redirect host
@@ -186,12 +187,12 @@ char Buffer[200] = {0};
 // Returns:     None
 /* ------------------------------------------------------------------------------------------- */
 
-void setup() 
+void setup()
 {
-  #if DEBUG_SERIAL
+#if DEBUG_SERIAL
   Serial.begin(74880);
-  while (!Serial);  
-  #endif
+  while (!Serial);
+#endif
 
   /* ----------------------------------------------------------------------------------------- */
 
@@ -200,114 +201,114 @@ void setup()
 
   // LED off
   digitalWrite (PIN_LED, HIGH);
-    
-  /* ----------------------------------------------------------------------------------------- */ 
 
-  #if DEBUG_SERIAL 
+  /* ----------------------------------------------------------------------------------------- */
+
+#if DEBUG_SERIAL
   Serial.printf ("[%05d] ", millis());
   Serial.println("Initializing EEPROM...");
-  #endif
-  
+#endif
+
   // Init EEPROM
   EEPROM.begin (ADDR_RTC_PENDING + 1);
 
-  #if DEBUG_SERIAL 
+#if DEBUG_SERIAL
   Serial.printf ("[%05d] ", millis());
   Serial.println("Done.");
-  #endif  
+#endif
 
   /* ----------------------------------------------------------------------------------------- */
-       
-  #if DEBUG_SERIAL 
+
+#if DEBUG_SERIAL
   Serial.printf ("[%05d] ", millis());
   Serial.println("Initializing SD card...");
-  #endif
+#endif
 
   // Card detect pin
   pinMode(PIN_SD_CD, INPUT_PULLUP);
 
-  // Check for SD card using Card Detect pin 
+  // Check for SD card using Card Detect pin
   LogToSD = !digitalRead (PIN_SD_CD);
 
   // SD card was not detected
   if (!LogToSD)
   {
-    #if DEBUG_SERIAL   
+#if DEBUG_SERIAL
     Serial.printf ("[%05d] ", millis());
     Serial.println("SD card not detected. Logging only via WiFi.");
-    #endif         
+#endif
 
     // Get configuration values from EEPROM
-    #if DEBUG_SERIAL     
+#if DEBUG_SERIAL
     Serial.printf ("[%05d] ", millis());
-    Serial.println("Getting last configuration from EEPROM..."); 
-    #endif 
-    
+    Serial.println("Getting last configuration from EEPROM...");
+#endif
+
     // Get configuration values from EEPROM
-    EEPROMGetConfig (LogConfig);     
+    EEPROMGetConfig (LogConfig);
   }
 
   // SD card was detected
   else
   {
     // Fails to initialize SD card
-    if (!SDCard.begin(PIN_SD_CS)) 
+    if (!SDCard.begin(PIN_SD_CS))
     {
-       #if DEBUG_SERIAL     
+#if DEBUG_SERIAL
       Serial.printf ("[%05d] ", millis());
-      Serial.println("Initialization failed! Logging only via WiFi."); 
-      #endif   
+      Serial.println("Initialization failed! Logging only via WiFi.");
+#endif
 
       // Get configuration values from EEPROM
-      #if DEBUG_SERIAL     
+#if DEBUG_SERIAL
       Serial.printf ("[%05d] ", millis());
-      Serial.println("Getting last configuration from EEPROM..."); 
-      #endif  
+      Serial.println("Getting last configuration from EEPROM...");
+#endif
 
       // Get configuration values from EEPROM
-      EEPROMGetConfig (LogConfig);              
-    }     
+      EEPROMGetConfig (LogConfig);
+    }
 
     // SD card was initialized
     else
     {
-      #if DEBUG_SERIAL
+#if DEBUG_SERIAL
       Serial.printf ("[%05d] ", millis());
-      Serial.println("Done.");     
-      #endif       
+      Serial.println("Done.");
+#endif
 
       // Try to open new firmware file
       UpdateFile = SDCard.open (UpdateFilename, FILE_READ);
-    
+
       // Firmware file not found
-      if (!UpdateFile) 
+      if (!UpdateFile)
       {
-        #if DEBUG_SERIAL
+#if DEBUG_SERIAL
         Serial.printf ("[%05d] ", millis());
-        Serial.println("New firmware not detected.");     
-        #endif                            
+        Serial.println("New firmware not detected.");
+#endif
       }
 
       // Firmware file was found
       else
-      {        
-        #if DEBUG_SERIAL     
+      {
+#if DEBUG_SERIAL
         Serial.printf ("[%05d] ", millis());
-        Serial.println("New firmware file detected. Updating..."); 
-        #endif  
+        Serial.println("New firmware file detected. Updating...");
+#endif
 
         // LED on
         digitalWrite (PIN_LED, LOW);
 
         // Start update with max available SketchSpace
         if (!Update.begin(((ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000), U_FLASH))
-        { 
-          #if DEBUG_SERIAL            
+        {
+#if DEBUG_SERIAL
           Serial.printf ("[%05d] ", millis());
           Serial.println("Invalid firmware file!");
-          #endif            
+#endif
         }
-    
+
         // Read all file bytes
         else
         {
@@ -316,7 +317,7 @@ void setup()
             unsigned char ibuffer[128];
             UpdateFile.read((unsigned char *)ibuffer, 128);
             Update.write(ibuffer, sizeof(ibuffer));
-          }   
+          }
         }
 
         // Close the file
@@ -324,116 +325,116 @@ void setup()
 
         // LED off
         digitalWrite (PIN_LED, HIGH);
-          
+
         // Update was successful
         if (Update.end(true))
         {
           // Set RTCPending flag to update RTC time - Saved in EEPROM in case update fails in this run
-          EEPROMSetRTCPending (true);          
-          
-          #if DEBUG_SERIAL  
-          Serial.printf ("[%05d] ", millis());      
+          EEPROMSetRTCPending (true);
+
+#if DEBUG_SERIAL
+          Serial.printf ("[%05d] ", millis());
           Serial.println("Success!");
-          #endif
+#endif
         }
 
         // Error updating
         else
         {
-          #if DEBUG_SERIAL  
-          Serial.printf ("[%05d] ", millis());      
+#if DEBUG_SERIAL
+          Serial.printf ("[%05d] ", millis());
           Serial.println("Error updating!");
-          #endif
+#endif
 
           // Flash LED to inform user
           FlashLED ();
-        }        
+        }
 
-        #if DEBUG_SERIAL     
+#if DEBUG_SERIAL
         Serial.printf ("[%05d] ", millis());
-        Serial.println("Deleting firmware file..."); 
-        #endif                     
+        Serial.println("Deleting firmware file...");
+#endif
 
         // Delete firmware file
         if (!SDCard.remove(UpdateFilename))
         {
-          #if DEBUG_SERIAL     
+#if DEBUG_SERIAL
           Serial.printf ("[%05d] ", millis());
-          Serial.println("Error deleting firmware file!"); 
-          #endif  
+          Serial.println("Error deleting firmware file!");
+#endif
         }
 
-        #if DEBUG_SERIAL     
+#if DEBUG_SERIAL
         Serial.printf ("[%05d] ", millis());
-        Serial.println("Done."); 
-        #endif 
-    
-        #if DEBUG_SERIAL    
+        Serial.println("Done.");
+#endif
+
+#if DEBUG_SERIAL
         Serial.printf ("[%05d] ", millis());
         Serial.println("Rebooting...");
-        #endif 
-    
+#endif
+
         // Reboot using GPIO16 (Tied to RST)
         delay (250);
         pinMode(16, OUTPUT);
-        digitalWrite(16, LOW);    
-      }    
+        digitalWrite(16, LOW);
+      }
 
       // Try to open new config file
       ConfigFile = SDCard.open (ConfigFilename, FILE_READ);
-    
+
       // Configuration file not found
-      if (!ConfigFile) 
+      if (!ConfigFile)
       {
-        #if DEBUG_SERIAL
+#if DEBUG_SERIAL
         Serial.printf ("[%05d] ", millis());
-        Serial.println("New configuration file not detected.");     
-        #endif                  
-        
-        // Get configuration values from EEPROM
-        #if DEBUG_SERIAL     
-        Serial.printf ("[%05d] ", millis());
-        Serial.println("Getting last configuration from EEPROM..."); 
-        #endif   
+        Serial.println("New configuration file not detected.");
+#endif
 
         // Get configuration values from EEPROM
-        EEPROMGetConfig (LogConfig);             
+#if DEBUG_SERIAL
+        Serial.printf ("[%05d] ", millis());
+        Serial.println("Getting last configuration from EEPROM...");
+#endif
+
+        // Get configuration values from EEPROM
+        EEPROMGetConfig (LogConfig);
       }
 
       // Configuration file was found
       else
-      {        
-        #if DEBUG_SERIAL     
+      {
+#if DEBUG_SERIAL
         Serial.printf ("[%05d] ", millis());
-        Serial.println("New configuration file detected. Parsing new values..."); 
-        #endif  
+        Serial.println("New configuration file detected. Parsing new values...");
+#endif
 
         // Get configuration values from SD card - Store in NewConfig
         SDGetConfig (NewConfig);
 
         // Close the file
         ConfigFile.close();
-        
-        #if DEBUG_SERIAL     
+
+#if DEBUG_SERIAL
         Serial.printf ("[%05d] ", millis());
-        Serial.println("Done."); 
-        #endif  
-        
-        #if DEBUG_SERIAL 
+        Serial.println("Done.");
+#endif
+
+#if DEBUG_SERIAL
         Serial.printf ("[%05d] New log filename: \'%s\' \n", millis(), NewConfig.Filename);
         Serial.printf ("[%05d] New log host: \'%s\' \n", millis(), NewConfig.HostURL);
         Serial.printf ("[%05d] New log script ID: \'%s\' \n", millis(), NewConfig.ScriptID);
-        Serial.printf ("[%05d] New log timezone: %d GMT \n", millis(), NewConfig.Timezone);  
+        Serial.printf ("[%05d] New log timezone: %d GMT \n", millis(), NewConfig.Timezone);
         Serial.printf ("[%05d] New WiFi SSID: \'%s\' \n", millis(), NewConfig.WifiSSID);
         Serial.printf ("[%05d] New WiFi password: \'%s\' \n", millis(), NewConfig.WifiPsw);
         Serial.printf ("[%05d] New sample interval: %d seconds \n", millis(), NewConfig.LogInterval);
         Serial.printf ("[%05d] New wait on error: %d seconds \n", millis(), NewConfig.ErrorInterval);
-        #endif        
+#endif
 
-        #if DEBUG_SERIAL     
+#if DEBUG_SERIAL
         Serial.printf ("[%05d] ", millis());
-        Serial.println("Saving new values in EEPROM..."); 
-        #endif       
+        Serial.println("Saving new values in EEPROM...");
+#endif
 
         // Save new values in EEPROM
         EEPROMSetConfig (NewConfig);
@@ -444,84 +445,84 @@ void setup()
         // Set RTCPending flag to update RTC time - Saved in EEPROM in case update fails in this run
         EEPROMSetRTCPending (true);
 
-        #if DEBUG_SERIAL     
+#if DEBUG_SERIAL
         Serial.printf ("[%05d] ", millis());
-        Serial.println("Done."); 
-        #endif 
+        Serial.println("Done.");
+#endif
 
-        #if DEBUG_SERIAL     
+#if DEBUG_SERIAL
         Serial.printf ("[%05d] ", millis());
-        Serial.println("Deleting configuration file..."); 
-        #endif                     
+        Serial.println("Deleting configuration file...");
+#endif
 
         // Delete configuration file
         if (!SDCard.remove(ConfigFilename))
         {
-          #if DEBUG_SERIAL     
+#if DEBUG_SERIAL
           Serial.printf ("[%05d] ", millis());
-          Serial.println("Error deleting configuration file!"); 
-          #endif  
+          Serial.println("Error deleting configuration file!");
+#endif
         }
 
-        #if DEBUG_SERIAL     
+#if DEBUG_SERIAL
         Serial.printf ("[%05d] ", millis());
-        Serial.println("Done."); 
-        #endif    
+        Serial.println("Done.");
+#endif
       }
     }
   }
 
   /* ----------------------------------------------------------------------------------------- */
 
-  #if DEBUG_SERIAL 
+#if DEBUG_SERIAL
   Serial.printf ("[%05d] Log filename: \'%s\' \n", millis(), LogConfig.Filename);
   Serial.printf ("[%05d] Log host: \'%s\' \n", millis(), LogConfig.HostURL);
   Serial.printf ("[%05d] Log script ID: \'%s\' \n", millis(), LogConfig.ScriptID);
-  Serial.printf ("[%05d] Log timezone: %d GMT \n", millis(), LogConfig.Timezone);  
+  Serial.printf ("[%05d] Log timezone: %d GMT \n", millis(), LogConfig.Timezone);
   Serial.printf ("[%05d] WiFi SSID: \'%s\' \n", millis(), LogConfig.WifiSSID);
   Serial.printf ("[%05d] WiFi password: \'%s\' \n", millis(), LogConfig.WifiPsw);
   Serial.printf ("[%05d] Sample interval: %d seconds \n", millis(), LogConfig.LogInterval);
   Serial.printf ("[%05d] Wait on error: %d seconds \n", millis(), LogConfig.ErrorInterval);
-  #endif  
+#endif
 
   /* ----------------------------------------------------------------------------------------- */
 
-  #if DEBUG_SERIAL 
-  Serial.printf ("[%05d] ", millis()); 
+#if DEBUG_SERIAL
+  Serial.printf ("[%05d] ", millis());
   Serial.println ("Starting WiFi connection...");
-  #endif
+#endif
 
   // Start WiFi connection
   WiFi.begin (LogConfig.WifiSSID, LogConfig.WifiPsw);
-  
-  /* ----------------------------------------------------------------------------------------- */  
 
-  #if DEBUG_SERIAL 
+  /* ----------------------------------------------------------------------------------------- */
+
+#if DEBUG_SERIAL
   Serial.printf ("[%05d] ", millis());
   Serial.println("Configuring DS1722...");
-  #endif
+#endif
 
   // Set DS1722 conversion mode
   TS.setMode (DS1722_MODE_ONESHOT);
 
   // Set DS1722 resolution
-  TS.setResolution (12);  
+  TS.setResolution (12);
 
   // Request a temperature conversion - Will be ready in 1.2s @ 12bits
   TS.requestConversion ();
 
-  #if DEBUG_SERIAL 
+#if DEBUG_SERIAL
   Serial.printf ("[%05d] ", millis());
   Serial.println("Done.");
-  #endif  
+#endif
 
   /* ----------------------------------------------------------------------------------------- */
 
-  #if DEBUG_SERIAL 
+#if DEBUG_SERIAL
   Serial.printf ("[%05d] ", millis());
   Serial.println("Configuring DS1390...");
-  #endif
-    
+#endif
+
   // Delay for DS1390 boot (mandatory)
   delay (200);
 
@@ -532,74 +533,74 @@ void setup()
   if (!Sample.TimeValid)
   {
     // Set RTCPending flag to update RTC time - Saved in EEPROM in case update fails in this run
-    EEPROMSetRTCPending (true);          
-              
-    #if DEBUG_SERIAL  
+    EEPROMSetRTCPending (true);
+
+#if DEBUG_SERIAL
     Serial.printf ("[%05d] ", millis());
-    Serial.println ("RTC memory content was recently lost!");  
-    #endif         
+    Serial.println ("RTC memory content was recently lost!");
+#endif
   }
-  
+
   // RTC data is valid
   else
   {
-    #if DEBUG_SERIAL
+#if DEBUG_SERIAL
     Serial.printf ("[%05d] ", millis());
     Serial.println ("RTC memory content is valid.");
-    #endif      
+#endif
   }
 
   // Set DS1390 trickle charger mode (250 ohms with one series diode)
-  RTC.setTrickleChargerMode (DS1390_TCH_250_D);   
+  RTC.setTrickleChargerMode (DS1390_TCH_250_D);
 
-  #if DEBUG_SERIAL 
+#if DEBUG_SERIAL
   Serial.printf ("[%05d] ", millis());
   Serial.println("Done.");
-  #endif    
+#endif
 
-  /* ----------------------------------------------------------------------------------------- */  
+  /* ----------------------------------------------------------------------------------------- */
 
   // LED on
   digitalWrite (PIN_LED, LOW);
 
   // Calculate battery voltage
-  Sample.BatteryVoltage = analogRead(PIN_ADC)*ADC_GAIN;   
+  Sample.BatteryVoltage = analogRead(PIN_ADC) * ADC_GAIN;
 
   // Get current time
   Sample.TimeEpoch = RTC.getDateTimeEpoch (LogConfig.Timezone);
-  
+
   // Get DS172 temperature
   Sample.Temperature = TS.getTemperature();
 
   // LED off
   digitalWrite (PIN_LED, HIGH);
-    
-  #if DEBUG_SERIAL  
+
+#if DEBUG_SERIAL
   Serial.printf ("[%05d] Epoch: %d \n", millis(), Sample.TimeEpoch);
-  Serial.printf ("[%05d] Vbat: %.4f V \n", millis(), Sample.BatteryVoltage);  
-  Serial.printf ("[%05d] Temperature: %.4f C \n", millis(), Sample.Temperature);          
-  #endif    
+  Serial.printf ("[%05d] Vbat: %.4f V \n", millis(), Sample.BatteryVoltage);
+  Serial.printf ("[%05d] Temperature: %.4f C \n", millis(), Sample.Temperature);
+#endif
 
-  /* ----------------------------------------------------------------------------------------- */  
+  /* ----------------------------------------------------------------------------------------- */
 
-  #if DEBUG_SERIAL   
-  Serial.printf ("[%05d] ", millis());      
+#if DEBUG_SERIAL
+  Serial.printf ("[%05d] ", millis());
   Serial.println("Waiting for WiFi to connect...");
-  #endif  
+#endif
 
   // Check connection status
-  while(WiFi.status() != WL_CONNECTED)
+  while (WiFi.status() != WL_CONNECTED)
   {
     // Connection timeout exceded
     if (ConnectionCounter >= (WIFI_TIMEOUT * 4))
-    {    
+    {
       // Online log not available
       LogToWifi = false;
 
-      #if DEBUG_SERIAL   
-      Serial.printf ("[%05d] ", millis());      
+#if DEBUG_SERIAL
+      Serial.printf ("[%05d] ", millis());
       Serial.println("WiFi connection timed-out!");
-      #endif  
+#endif
 
       // Exit while loop
       break;
@@ -610,9 +611,9 @@ void setup()
     {
       // 1 second delay
       delay(250);
-  
+
       // Increase counter
-      ConnectionCounter++;    
+      ConnectionCounter++;
     }
   }
 
@@ -621,52 +622,52 @@ void setup()
   {
     // Online log available
     LogToWifi = true;
-       
-    #if DEBUG_SERIAL
-    Serial.printf ("[%05d] ", millis());  
+
+#if DEBUG_SERIAL
+    Serial.printf ("[%05d] ", millis());
     Serial.println("WiFi connected.");
-    #endif
+#endif
   }
 
-  /* ----------------------------------------------------------------------------------------- */  
+  /* ----------------------------------------------------------------------------------------- */
 
   // Post data if WiFi is connected
   if (LogToWifi)
   {
-    #if DEBUG_SERIAL
+#if DEBUG_SERIAL
     Serial.printf ("[%05d] ", millis());
     Serial.println ("Connecting to host...");
-    #endif
-  
+#endif
+
     // Start HTTP client connection to host
     LogClient.begin (LogConfig.HostURL);
-  
+
     // Define request timeout
     LogClient.setTimeout(5000);
-  
+
     // Define request content type - Required to perform posts
     LogClient.addHeader("Content-Type", "application/x-www-form-urlencoded");
-  
+
     // Delay to establish connection
     delay (100);
-    
-    #if DEBUG_SERIAL
-    Serial.printf ("[%05d] ", millis());  
-    Serial.println("Done.");   
-    #endif
-   
+
+#if DEBUG_SERIAL
+    Serial.printf ("[%05d] ", millis());
+    Serial.println("Done.");
+#endif
+
     // Prepare log buffer
-    snprintf (Buffer, sizeof(Buffer), "id=%s&log=EP:%010d-VB:%.4f-TS:%.4f-ST:%d-SD:%d", 
-        LogConfig.ScriptID, Sample.TimeEpoch, Sample.BatteryVoltage, Sample.Temperature, Sample.TimeValid, LogToSD);     
-  
-    #if DEBUG_SERIAL
-    Serial.printf ("[%05d] ", millis());  
-    Serial.println ("Posting...");  
-    #endif
-  
+    snprintf (Buffer, sizeof(Buffer), "id=%s&log=EP:%010d-VB:%.4f-TS:%.4f-ST:%d-SD:%d",
+              LogConfig.ScriptID, Sample.TimeEpoch, Sample.BatteryVoltage, Sample.Temperature, Sample.TimeValid, LogToSD);
+
+#if DEBUG_SERIAL
+    Serial.printf ("[%05d] ", millis());
+    Serial.println ("Posting...");
+#endif
+
     // HTTP post request to host and get response code
-    short PostResponseCode = LogClient.POST(Buffer); 
-    
+    short PostResponseCode = LogClient.POST(Buffer);
+
     // Close client connection
     LogClient.end();
 
@@ -675,156 +676,156 @@ void setup()
     {
       LogWifiSuccess = true;
 
-      #if DEBUG_SERIAL 
-      Serial.printf ("[%05d] ", millis());   
+#if DEBUG_SERIAL
+      Serial.printf ("[%05d] ", millis());
       Serial.println ("Done.");
-      #endif         
+#endif
     }
 
     // Post failed
     else
     {
       LogWifiSuccess = false;
-      
-      #if DEBUG_SERIAL 
-      Serial.printf ("[%05d] ", millis());   
-      Serial.println ("Failed to post data!");
-      #endif 
-    } 
 
-    #if DEBUG_SERIAL 
-    Serial.printf ("[%05d] ", millis());   
+#if DEBUG_SERIAL
+      Serial.printf ("[%05d] ", millis());
+      Serial.println ("Failed to post data!");
+#endif
+    }
+
+#if DEBUG_SERIAL
+    Serial.printf ("[%05d] ", millis());
     Serial.printf ("Response code: %d \n", PostResponseCode);
-    #endif          
+#endif
   }
 
   /* ----------------------------------------------------------------------------------------- */
 
   // Save data to SD card if available
   if (LogToSD)
-  {    
+  {
     // Open the log file
     LogFile = SDCard.open(LogConfig.Filename, FILE_WRITE);
-  
+
     // If the file opened okay, write to it
-    if (LogFile) 
+    if (LogFile)
     {
-      #if DEBUG_SERIAL    
+#if DEBUG_SERIAL
       Serial.printf ("[%05d] ", millis());
       Serial.println ("Writing to SD card...");
-      #endif    
+#endif
 
       // Prepare log buffer
-      snprintf (Buffer, sizeof(Buffer), "%010d; %.4f;  %.4f; %d; %d", 
-          Sample.TimeEpoch, Sample.BatteryVoltage, Sample.Temperature, Sample.TimeValid, LogWifiSuccess);
-         
+      snprintf (Buffer, sizeof(Buffer), "%010d; %.4f;  %.4f; %d; %d",
+                Sample.TimeEpoch, Sample.BatteryVoltage, Sample.Temperature, Sample.TimeValid, LogWifiSuccess);
+
       // Write to file
       LogFile.println(Buffer);
-      
+
       // Close the file
       LogFile.close();
 
       // Write was successful
       LogSDSuccess = true;
-           
-      #if DEBUG_SERIAL     
+
+#if DEBUG_SERIAL
       Serial.printf ("[%05d] ", millis());
       Serial.println("Done.");
-      #endif            
-    } 
-    
+#endif
+    }
+
     // Error opening the file
-    else 
+    else
     {
       LogSDSuccess = false;
-            
-      #if DEBUG_SERIAL       
+
+#if DEBUG_SERIAL
       Serial.printf ("[%05d] ", millis());
       Serial.println ("Error opening the file!");
-      #endif
+#endif
     }
   }
 
-  /* ----------------------------------------------------------------------------------------- */ 
+  /* ----------------------------------------------------------------------------------------- */
 
   if (LogWifiSuccess && LogSDSuccess)
   {
-    #if DEBUG_SERIAL       
+#if DEBUG_SERIAL
     Serial.printf ("[%05d] ", millis());
     Serial.println ("Data was saved online and in the SD card.");
-    #endif      
+#endif
   }
 
   else if (LogWifiSuccess)
   {
-    #if DEBUG_SERIAL       
+#if DEBUG_SERIAL
     Serial.printf ("[%05d] ", millis());
     Serial.println ("Data was saved only online.");
-    #endif      
+#endif
   }
 
   else if (LogSDSuccess)
   {
-    #if DEBUG_SERIAL       
+#if DEBUG_SERIAL
     Serial.printf ("[%05d] ", millis());
     Serial.println ("Data was saved only in the SD card.");
-    #endif      
-  }  
+#endif
+  }
 
   else
   {
-    #if DEBUG_SERIAL       
+#if DEBUG_SERIAL
     Serial.printf ("[%05d] ", millis());
     Serial.println ("Data was not saved!");
-    #endif       
+#endif
   }
 
-  /* ----------------------------------------------------------------------------------------- */   
+  /* ----------------------------------------------------------------------------------------- */
 
   // RTC time needs to be updated
-  if (EEPROMGetRTCPending ()) 
+  if (EEPROMGetRTCPending ())
   {
     // WiFi is connected
     if (LogToWifi)
     {
-      #if DEBUG_SERIAL       
+#if DEBUG_SERIAL
       Serial.printf ("[%05d] ", millis());
-      Serial.println ("RTC time update is pending. Updating..."); 
-      #endif
-           
+      Serial.println ("RTC time update is pending. Updating...");
+#endif
+
       // Start NTP client
-      NTP.begin(); 
+      NTP.begin();
 
       // Get NTP time
       if (NTP.update())
-      { 
+      {
         // Update DS1390 time using NTP Epoch timestamp
-        RTC.setDateTimeEpoch (NTP.getEpochTime(), LogConfig.Timezone);    
+        RTC.setDateTimeEpoch (NTP.getEpochTime(), LogConfig.Timezone);
 
         // Reset update pending flag
         EEPROMSetRTCPending (false);
-        
-        #if DEBUG_SERIAL       
+
+#if DEBUG_SERIAL
         Serial.printf ("[%05d] ", millis());
-        Serial.println ("Done."); 
-        #endif                      
+        Serial.println ("Done.");
+#endif
       }
 
       else
       {
-        #if DEBUG_SERIAL       
+#if DEBUG_SERIAL
         Serial.printf ("[%05d] ", millis());
-        Serial.println ("Error getting data from NTC server!"); 
-        #endif        
+        Serial.println ("Error getting data from NTC server!");
+#endif
       }
     }
 
     else
     {
-      #if DEBUG_SERIAL       
+#if DEBUG_SERIAL
       Serial.printf ("[%05d] ", millis());
-      Serial.println ("RTC time update is pending but WiFi is not available!"); 
-      #endif      
+      Serial.println ("RTC time update is pending but WiFi is not available!");
+#endif
     }
   }
 
@@ -833,43 +834,43 @@ void setup()
   // Battery voltage is low
   if (Sample.BatteryVoltage < VBAT_LOW)
   {
-    #if DEBUG_SERIAL 
+#if DEBUG_SERIAL
     Serial.printf ("[%05d] ", millis());
     Serial.println ("Low battery!");
     Serial.printf ("[%05d] ", millis());
     Serial.println ("Shutting down...");
-    #endif  
+#endif
 
     // Flash LED to inform user
     FlashLED ();
-    
+
     // Enter deep sleep forever
-    ESP.deepSleep(0);  
+    ESP.deepSleep(0);
   }
 
   /* ----------------------------------------------------------------------------------------- */
-  
+
   // Data was not saved
   if (!LogWifiSuccess && !LogSDSuccess)
   {
-    #if DEBUG_SERIAL     
-    Serial.printf ("[%05d] ", millis());  
+#if DEBUG_SERIAL
+    Serial.printf ("[%05d] ", millis());
     Serial.printf ("Trying again in %d seconds... \n", LogConfig.ErrorInterval);
-    #endif      
-    
+#endif
+
     // Call error function
-    RunOnError ();        
+    RunOnError ();
   }
 
   /* ----------------------------------------------------------------------------------------- */
 
-  #if DEBUG_SERIAL
-  Serial.printf ("[%05d] ", millis());    
+#if DEBUG_SERIAL
+  Serial.printf ("[%05d] ", millis());
   Serial.printf("Next update in %d seconds... \n", LogConfig.LogInterval);
-  #endif
-  
+#endif
+
   // Enter deep sleep
-  ESP.deepSleep(LogConfig.LogInterval*1e6);           
+  ESP.deepSleep(LogConfig.LogInterval * 1e6);
 }
 
 /* ------------------------------------------------------------------------------------------- */
@@ -879,7 +880,7 @@ void setup()
 // Returns:     None
 /* ------------------------------------------------------------------------------------------- */
 
-void loop () 
+void loop ()
 {
 }
 
@@ -890,13 +891,13 @@ void loop ()
 // Returns:     None
 /* ------------------------------------------------------------------------------------------- */
 
-void RunOnError () 
+void RunOnError ()
 {
   // Flash LED to inform user
   FlashLED ();
-  
+
   // Enter deep sleep
-  ESP.deepSleep(LogConfig.ErrorInterval*1e6);    
+  ESP.deepSleep(LogConfig.ErrorInterval * 1e6);
 }
 
 /* ------------------------------------------------------------------------------------------- */
@@ -912,9 +913,9 @@ void FlashLED ()
   delay(200);
   digitalWrite (PIN_LED, HIGH);
   delay(200);
-  digitalWrite (PIN_LED, LOW); 
+  digitalWrite (PIN_LED, LOW);
   delay(200);
-  digitalWrite (PIN_LED, HIGH);  
+  digitalWrite (PIN_LED, HIGH);
 }
 
 /* ------------------------------------------------------------------------------------------- */
@@ -933,15 +934,15 @@ void SDGetConfig (StructConfig &Buffer)
   unsigned char EOLPos;
 
   // Read all lines of file sequentially
-  while ((EOLPos = ConfigFile.fgets(BufferLine, sizeof(BufferLine))) > 0) 
+  while ((EOLPos = ConfigFile.fgets(BufferLine, sizeof(BufferLine))) > 0)
   {
     // Proccess only lines that contain variables
     if (BufferLine[0] == '$')
     {
       // Current line is $Filename
-      if (strstr (BufferLine, "$Filename ")) 
-      { 
-        // Start index to extract text    
+      if (strstr (BufferLine, "$Filename "))
+      {
+        // Start index to extract text
         unsigned char StartPos = 10;
 
         // Copy value to new config buffer from StartPos to '\n'
@@ -949,49 +950,49 @@ void SDGetConfig (StructConfig &Buffer)
       }
 
       // Current line is $HostURL
-      else if (strstr (BufferLine, "$HostURL "))   
-      { 
-        // Start index to extract text    
+      else if (strstr (BufferLine, "$HostURL "))
+      {
+        // Start index to extract text
         unsigned char StartPos = 9;
 
         // Copy value to buffer from StartPos to '\n'
         strncpy (Buffer.HostURL, (BufferLine + StartPos), (EOLPos - StartPos - 1));
       }
 
-      // Current line is $ScriptID                          
+      // Current line is $ScriptID
       else if (strstr (BufferLine, "$ScriptID "))
-      { 
-        // Start index to extract text    
+      {
+        // Start index to extract text
         unsigned char StartPos = 10;
 
         // Copy value to buffer from StartPos to '\n'
         strncpy (Buffer.ScriptID, (BufferLine + StartPos), (EOLPos - StartPos - 1));
       }
 
-      // Current line is $WifiSSID                  
+      // Current line is $WifiSSID
       else if (strstr (BufferLine, "$WifiSSID "))
-      { 
-        // Start index to extract text    
+      {
+        // Start index to extract text
         unsigned char StartPos = 10;
-        
+
         // Copy value to buffer from StartPos to '\n'
         strncpy (Buffer.WifiSSID, (BufferLine + StartPos), (EOLPos - StartPos - 1));
       }
 
-      // Current line is $WifiPsw                
-      else if (strstr (BufferLine, "$WifiPsw ")) 
-      { 
-        // Start index to extract text    
+      // Current line is $WifiPsw
+      else if (strstr (BufferLine, "$WifiPsw "))
+      {
+        // Start index to extract text
         unsigned char StartPos = 9;
 
         // Copy value to buffer from StartPos to '\n'
-        strncpy (Buffer.WifiPsw, (BufferLine + StartPos), (EOLPos - StartPos - 1));     
+        strncpy (Buffer.WifiPsw, (BufferLine + StartPos), (EOLPos - StartPos - 1));
       }
 
       // Current line is $Timezone
       else if (strstr (BufferLine, "$Timezone "))
-      { 
-        // Start index to extract text    
+      {
+        // Start index to extract text
         unsigned char StartPos = 10;
 
         // Buffer
@@ -1001,13 +1002,13 @@ void SDGetConfig (StructConfig &Buffer)
         strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
 
         // Convert value to number
-        Buffer.Timezone = constrain(atoi(Value), -12, 12);       
+        Buffer.Timezone = constrain(atoi(Value), -12, 12);
       }
-      
-      // Current line is $LogInterval      
+
+      // Current line is $LogInterval
       else if (strstr (BufferLine, "$LogInterval "))
-      { 
-        // Start index to extract text    
+      {
+        // Start index to extract text
         unsigned char StartPos = 12;
 
         // Buffer
@@ -1017,13 +1018,13 @@ void SDGetConfig (StructConfig &Buffer)
         strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
 
         // Convert value to number
-        Buffer.LogInterval = constrain(atoi(Value), 1, 65535);    
+        Buffer.LogInterval = constrain(atoi(Value), 1, 65535);
       }
-      
-      // Current line is $ErrorInterval   
+
+      // Current line is $ErrorInterval
       else if (strstr (BufferLine, "$ErrorInterval "))
-      { 
-        // Start index to extract text    
+      {
+        // Start index to extract text
         unsigned char StartPos = 15;
 
         // Buffer
@@ -1033,7 +1034,7 @@ void SDGetConfig (StructConfig &Buffer)
         strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
 
         // Convert value to number
-        Buffer.ErrorInterval = constrain(atoi(Value), 1, 65535);                  
+        Buffer.ErrorInterval = constrain(atoi(Value), 1, 65535);
       }
     }
   }
@@ -1056,7 +1057,7 @@ void EEPROMGetConfig (StructConfig &Buffer)
   EEPROMGetWifiPsw (Buffer.WifiPsw);
   EEPROMGetTimezone (&Buffer.Timezone);
   EEPROMGetLogInterval (&Buffer.LogInterval);
-  EEPROMGetErrorInterval (&Buffer.ErrorInterval); 
+  EEPROMGetErrorInterval (&Buffer.ErrorInterval);
 }
 
 /* ------------------------------------------------------------------------------------------- */
@@ -1076,7 +1077,7 @@ void EEPROMSetConfig (StructConfig &Buffer)
   EEPROMSetWifiPsw (Buffer.WifiPsw);
   EEPROMSetTimezone (Buffer.Timezone);
   EEPROMSetLogInterval (Buffer.LogInterval);
-  EEPROMSetErrorInterval (Buffer.ErrorInterval); 
+  EEPROMSetErrorInterval (Buffer.ErrorInterval);
 }
 
 /* ------------------------------------------------------------------------------------------- */
@@ -1298,7 +1299,7 @@ void EEPROMSetTimezone (int Timezone)
 {
   // Contrain value
   Timezone = constrain (Timezone, -12, 12);
-  
+
   // Write upper and lower bytes of Timezone
   EEPROM.write (ADDR_TIMEZONE, Timezone >> 8);
   EEPROM.write (ADDR_TIMEZONE + 1, Timezone & 0xFF);
@@ -1329,9 +1330,9 @@ void EEPROMGetLogInterval (unsigned short *Interval)
 
 void EEPROMSetLogInterval (unsigned short Interval)
 {
-  // Contrain value	
+  // Contrain value
   Interval = constrain (Interval, 0, 65535);
-  
+
   // Write upper and lower bytes of Interval
   EEPROM.write (ADDR_TIME_SAMPLE, Interval >> 8);
   EEPROM.write (ADDR_TIME_SAMPLE + 1, Interval & 0xFF);
@@ -1362,9 +1363,9 @@ void EEPROMGetErrorInterval (unsigned short *Interval)
 
 void EEPROMSetErrorInterval (unsigned int Interval)
 {
-  // Contrain value	
+  // Contrain value
   Interval = constrain (Interval, 0, 65535);
-  
+
   // Write upper and lower bytes of Interval
   EEPROM.write (ADDR_TIME_ERROR, Interval >> 8);
   EEPROM.write (ADDR_TIME_ERROR + 1, Interval & 0xFF);
