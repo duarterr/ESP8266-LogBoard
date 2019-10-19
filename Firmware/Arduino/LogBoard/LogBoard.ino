@@ -1,6 +1,6 @@
 /* ------------------------------------------------------------------------------------------- */
 // LogBoard - Data logger firwmare for the ESP8266 LogBoard
-// Version: 1.0
+// Version: 1.1
 // Author:  Renan R. Duarte
 // E-mail:  duarte.renan@hotmail.com
 // Date:    October 18, 2019
@@ -12,24 +12,6 @@
 //          is performed using cURL.
 //
 // Released into the public domain
-/* ------------------------------------------------------------------------------------------- */
-//
-// Code workflow:
-// (1) Init EEPROM
-// (2) SD card present? -  N: Log only via Wifi. Load config from EEPROM
-//                         Y: SD has new firmware file? -  N: Move on
-//                                                         Y: Update firmare
-//                                                            Get NTP time and update RTC
-//                            SD has new config file? -  N: Load config from EEPROM
-//                                                       Y: Save to EEPROM. Delete config file
-//                                                          Get NTP time and update RTC
-// (3) Start wifi connection
-// (4) Start peripherals
-// (5) Sample data
-// (6) WiFi connected? -  Y: Post data - Get result
-//                        N: Save to SD card if present
-// (7) Vbat < VBAT_LOW? - Y: Low: Sleep forever
-//                        N: Normal: Sleep TIME_SAMPLE
 /* ------------------------------------------------------------------------------------------- */
 
 /* ------------------------------------------------------------------------------------------- */
@@ -77,20 +59,27 @@ using namespace sdfat;
 #define ADC_GAIN                0.005343342
 
 /* ------------------------------------------------------------------------------------------- */
-// Software defines
+// Software default constants
 /* ------------------------------------------------------------------------------------------- */
 
 // Default configuration file
-const PROGMEM char* ConfigFilename = "NewConfig.txt";
+const PROGMEM char* FilenameNewConfig = "NewConfig.txt";
 
 // Default firmware file
-const PROGMEM char* UpdateFilename = "NewFirmware.bin";
+const PROGMEM char* FilenameNewFirmware = "NewFirmware.bin";
 
 // NTP server - Result is given by server closest to you, so it's usually in your timezone
 const PROGMEM char* NTPServerURL = "0.br.pool.ntp.org";  // Brazilian server
 
+/* ------------------------------------------------------------------------------------------- */
+// Software defines
+/* ------------------------------------------------------------------------------------------- */
+
 // Code debug with serial port
 #define DEBUG_SERIAL            true
+
+// Time to sleep if an error occur loading settings from EEPROM (seconds)
+#define ERROR_SLEEP_INTERVAL    60
 
 // WiFi connection timeout (seconds)
 #define WIFI_TIMEOUT            5
@@ -99,15 +88,72 @@ const PROGMEM char* NTPServerURL = "0.br.pool.ntp.org";  // Brazilian server
 #define VBAT_LOW                3
 
 // EEPROM addresses
-#define ADDR_FILENAME           0                     // 64 bytes max (+ '\n')
-#define ADDR_HOSTURL            ADDR_FILENAME + 64    // 64 bytes max (+ '\n')
-#define ADDR_SCRIPTID           ADDR_HOSTURL + 64     // 64 bytes max (+ '\n')
-#define ADDR_TIMEZONE           ADDR_SCRIPTID + 64    // 2 bytes max
-#define ADDR_WIFI_SSID          ADDR_TIMEZONE + 2     // 32 bytes max (+ '\n')
-#define ADDR_WIFI_PSW           ADDR_WIFI_SSID + 32   // 32 bytes max (+ '\n')
-#define ADDR_TIME_SAMPLE        ADDR_WIFI_PSW + 32    // 2 bytes max 
-#define ADDR_TIME_ERROR         ADDR_TIME_SAMPLE + 2  // 2 bytes max 
-#define ADDR_RTC_PENDING        ADDR_TIME_ERROR + 2   // 1 byte
+#define ADDR_LOG_FILENAME       0x000 // 64 bytes (63c + '\n')
+#define ADDR_LOG_INTERVAL       0x040 // 2 bytes (MSB + LSB)
+#define ADDR_LOG_WAIT_TIME      0x042 // 2 bytes (MSB + LSB) 
+#define ADDR_LOG_TIMEZONE       0x044 // 2 bytes (MSB + LSB)
+#define ADDR_WIFI_ENABLED       0x046 // 1 byte
+#define ADDR_WIFI_SYNC          0x047 // 1 byte
+#define ADDR_WIFI_SSID          0x048 // 32 bytes (31c + '\n')
+#define ADDR_WIFI_PSW           0x068 // 32 bytes (31c + '\n')
+#define ADDR_WIFI_HOSTURL       0x088 // 64 bytes (63c + '\n')
+#define ADDR_WIFI_SCRIPTID      0x0C8 // 64 bytes (63c + '\n')
+#define ADDR_CHECKSUM           0x108 // 4 bytes
+#define ADDR_RTC_PENDING        0x10C // 1 byte
+#define ADDR_SYNC_PENDING       0x10D // 1 byte
+
+// EEPROM total bytes
+#define EEPROM_SIZE             0x10E // 270 bytes
+
+/* ------------------------------------------------------------------------------------------- */
+// Global variables
+/* ------------------------------------------------------------------------------------------- */
+
+// Configuration variables
+struct StructConfig
+{
+  char LogFilename[64] = {0};         // SD card log file       
+  unsigned int LogInterval = 1;       // Time between samples (10 to 3600 seconds)
+  unsigned int LogWaitTime = 1;       // Time to wait after on error (1 to 3600 seconds)
+  int LogTimezone = 0;                // Timezone (-12 to +12, 0 = GMT)
+  unsigned char WifiEnabled = 0;      // Use WiFi functions
+  unsigned char WifiSyncEnable = 0;   // Sync data stored in SD card to Google Sheets
+  char WifiSSID[32] = {0};            // WiFi SSID
+  char WifiPsw[32] = {0};             // WiFi password
+  char WifiHostURL[64] = {0};         // URL of the HTTP->HTTPs redirect host
+  char WifiScriptID[64] = {0};        // Google Script ID
+} Config, NewConfig;
+
+// Sampled data
+struct StructSample
+{
+  float Temperature = 0;              // DS1722 temperature
+  float BatteryVoltage = 0;           // ADC voltage
+  unsigned long RTCEpoch = 0;         // RTC date and time - Epoch format
+  bool RTCValid = false;              // RTC memory was not lost. Data is reliable
+} Sample;
+
+// Code flags
+struct StructFlag
+{
+  bool SDAvailable = false;           // SD is installed and accessible
+  bool WiFiAvailable = false;         // WiFi is connected
+  bool NewFirmwareSuccess = false;    // New firmware was correctly loaded
+  bool NewConfigSuccess = false;      // New congiguration was correctly loaded
+  bool PendingReboot = false;         // Reboot is pending
+  bool PendingRTCUpdate = false;      // RTC update is pending
+  bool PendingWifiSync = false;       // WiFi sync is pending
+} Flag;
+
+// Code times
+struct StructTime
+{
+  unsigned int RequestTS = 0;         // Temperature conversion request time
+  unsigned int RequestWifi = 0;       // WiFi connection request time
+} Time;
+
+// Log buffer
+char Buffer[200] = {0};
 
 /* ------------------------------------------------------------------------------------------- */
 // Constructors
@@ -122,14 +168,14 @@ DS1390 RTC (PIN_RTC_CS);
 // SD card
 SdFat SDCard;
 
-// Configuration file
-File ConfigFile;
+// New configuration file
+File FileNewConfig;
 
-// Update file
-File UpdateFile;
+// New firmware file
+File FileNewFirmware;
 
 // Log file
-File LogFile;
+File FileLog;
 
 // HTTP client
 HTTPClient LogClient;
@@ -141,46 +187,6 @@ WiFiUDP UDP;
 NTPClient NTP(UDP, NTPServerURL);
 
 /* ------------------------------------------------------------------------------------------- */
-// Global variables
-/* ------------------------------------------------------------------------------------------- */
-
-// Structure to store the configuration variables
-struct StructConfig
-{
-  char Filename[64] = {0};            // Log file
-  char WifiSSID[32] = {0};            // WiFi SSID
-  char WifiPsw[32] = {0};             // WiFi password
-  char HostURL[64] = {0};             // URL of the HTTP->HTTPs redirect host
-  char ScriptID[64] = {0};            // Google script ID
-  unsigned short LogInterval = 1;     // Time between samples (1 to 65535 seconds)
-  unsigned short ErrorInterval = 1;   // Time to wait after on error (1 to 65535 seconds)
-  int Timezone = 0;                   // Timezone (-12 to +12, 0 = GMT)
-} LogConfig, NewConfig;
-
-// Structure to store sampled data
-struct StructSample
-{
-  float Temperature = 0;              // DS1722 temperature
-  float BatteryVoltage = 0;           // ADC voltage
-  unsigned long TimeEpoch = 0;        // RTC date and time - Epoch format
-  bool TimeValid = false;             // RTC data valid flag
-} Sample;
-
-// Log flags
-bool LogToSD = false;
-bool LogToWifi = false;
-
-// Log success flags
-bool LogSDSuccess = false;
-bool LogWifiSuccess = false;
-
-// WiFi connection counter
-unsigned char ConnectionCounter = 0;
-
-// Log buffer
-char Buffer[200] = {0};
-
-/* ------------------------------------------------------------------------------------------- */
 // Name:        setup
 // Description: This function runs on boot
 // Arguments:   None
@@ -189,318 +195,417 @@ char Buffer[200] = {0};
 
 void setup()
 {
-#if DEBUG_SERIAL
+  /* ----------------------------------------------------------------------------------------- */
+  // Init Serial
+  /* ----------------------------------------------------------------------------------------- */
+  
+  #if DEBUG_SERIAL
   Serial.begin(74880);
   while (!Serial);
-#endif
+  #endif
 
   /* ----------------------------------------------------------------------------------------- */
+  // Init GPIO
+  /* ----------------------------------------------------------------------------------------- */
 
+  #if DEBUG_SERIAL
+  Serial.printf ("[%05d] Initializing GPIOs... \n", millis());
+  #endif
+    
   // Set LED pin as digital output
   pinMode(PIN_LED, OUTPUT);
 
   // LED off
   digitalWrite (PIN_LED, HIGH);
 
-  /* ----------------------------------------------------------------------------------------- */
+  // Set Card Detect pin as input with pullup
+  pinMode(PIN_SD_CD, INPUT_PULLUP);  
 
-#if DEBUG_SERIAL
-  Serial.printf ("[%05d] ", millis());
-  Serial.println("Initializing EEPROM...");
-#endif
+  #if DEBUG_SERIAL
+  Serial.printf ("[%05d] Done. \n", millis());  
+  #endif  
+
+  /* ----------------------------------------------------------------------------------------- */
+  // Check Vbat
+  /* ----------------------------------------------------------------------------------------- */  
+
+   // Get battery voltage
+  Sample.BatteryVoltage = analogRead(PIN_ADC) * ADC_GAIN; 
+
+  // Jump to loop if battery voltage is too low
+  if (Sample.BatteryVoltage < VBAT_LOW)
+    return;
+  
+  /* ----------------------------------------------------------------------------------------- */
+  // Init EEPROM
+  /* ----------------------------------------------------------------------------------------- */
+  
+  #if DEBUG_SERIAL
+  Serial.printf ("[%05d] Initializing EEPROM... \n", millis());  
+  #endif
 
   // Init EEPROM
-  EEPROM.begin (ADDR_RTC_PENDING + 1);
+  EEPROM.begin (EEPROM_SIZE);
 
-#if DEBUG_SERIAL
-  Serial.printf ("[%05d] ", millis());
-  Serial.println("Done.");
-#endif
+  #if DEBUG_SERIAL
+  Serial.printf ("[%05d] Done. \n", millis());  
+  #endif
 
   /* ----------------------------------------------------------------------------------------- */
+  // Init SD card
+  /* ----------------------------------------------------------------------------------------- */
 
-#if DEBUG_SERIAL
-  Serial.printf ("[%05d] ", millis());
-  Serial.println("Initializing SD card...");
-#endif
-
-  // Card detect pin
-  pinMode(PIN_SD_CD, INPUT_PULLUP);
-
-  // Check for SD card using Card Detect pin
-  LogToSD = !digitalRead (PIN_SD_CD);
-
-  // SD card was not detected
-  if (!LogToSD)
-  {
-#if DEBUG_SERIAL
-    Serial.printf ("[%05d] ", millis());
-    Serial.println("SD card not detected. Logging only via WiFi.");
-#endif
-
-    // Get configuration values from EEPROM
-#if DEBUG_SERIAL
-    Serial.printf ("[%05d] ", millis());
-    Serial.println("Getting last configuration from EEPROM...");
-#endif
-
-    // Get configuration values from EEPROM
-    EEPROMGetConfig (LogConfig);
-  }
-
+  #if DEBUG_SERIAL
+  Serial.printf ("[%05d] Checking SD card... \n", millis());  
+  #endif
+    
   // SD card was detected
-  else
+  if (!digitalRead (PIN_SD_CD))
   {
-    // Fails to initialize SD card
-    if (!SDCard.begin(PIN_SD_CS))
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] SD card detected. \n", millis()); 
+    #endif   
+
+    // Initialize SD card
+    if (SDCard.begin(PIN_SD_CS))
     {
-#if DEBUG_SERIAL
-      Serial.printf ("[%05d] ", millis());
-      Serial.println("Initialization failed! Logging only via WiFi.");
-#endif
+      // Set flag
+      Flag.SDAvailable = true;  
 
-      // Get configuration values from EEPROM
-#if DEBUG_SERIAL
-      Serial.printf ("[%05d] ", millis());
-      Serial.println("Getting last configuration from EEPROM...");
-#endif
-
-      // Get configuration values from EEPROM
-      EEPROMGetConfig (LogConfig);
+      #if DEBUG_SERIAL
+      Serial.printf ("[%05d] Card initialized. Size: %d MB. \n", millis(), SDCard.card()->cardSize()/2048);   
+      #endif
     }
 
-    // SD card was initialized
+    // Fails to initialize SD card
     else
     {
-#if DEBUG_SERIAL
-      Serial.printf ("[%05d] ", millis());
-      Serial.println("Done.");
-#endif
+      // Clear flag
+      Flag.SDAvailable = false; 
 
-      // Try to open new firmware file
-      UpdateFile = SDCard.open (UpdateFilename, FILE_READ);
-
-      // Firmware file not found
-      if (!UpdateFile)
-      {
-#if DEBUG_SERIAL
-        Serial.printf ("[%05d] ", millis());
-        Serial.println("New firmware not detected.");
-#endif
-      }
-
-      // Firmware file was found
-      else
-      {
-#if DEBUG_SERIAL
-        Serial.printf ("[%05d] ", millis());
-        Serial.println("New firmware file detected. Updating...");
-#endif
-
-        // LED on
-        digitalWrite (PIN_LED, LOW);
-
-        // Start update with max available SketchSpace
-        if (!Update.begin(((ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000), U_FLASH))
-        {
-#if DEBUG_SERIAL
-          Serial.printf ("[%05d] ", millis());
-          Serial.println("Invalid firmware file!");
-#endif
-        }
-
-        // Read all file bytes
-        else
-        {
-          while (UpdateFile.available())
-          {
-            unsigned char ibuffer[128];
-            UpdateFile.read((unsigned char *)ibuffer, 128);
-            Update.write(ibuffer, sizeof(ibuffer));
-          }
-        }
-
-        // Close the file
-        UpdateFile.close();
-
-        // LED off
-        digitalWrite (PIN_LED, HIGH);
-
-        // Update was successful
-        if (Update.end(true))
-        {
-          // Set RTCPending flag to update RTC time - Saved in EEPROM in case update fails in this run
-          EEPROMSetRTCPending (true);
-
-#if DEBUG_SERIAL
-          Serial.printf ("[%05d] ", millis());
-          Serial.println("Success!");
-#endif
-        }
-
-        // Error updating
-        else
-        {
-#if DEBUG_SERIAL
-          Serial.printf ("[%05d] ", millis());
-          Serial.println("Error updating!");
-#endif
-
-          // Flash LED to inform user
-          FlashLED ();
-        }
-
-#if DEBUG_SERIAL
-        Serial.printf ("[%05d] ", millis());
-        Serial.println("Deleting firmware file...");
-#endif
-
-        // Delete firmware file
-        if (!SDCard.remove(UpdateFilename))
-        {
-#if DEBUG_SERIAL
-          Serial.printf ("[%05d] ", millis());
-          Serial.println("Error deleting firmware file!");
-#endif
-        }
-
-#if DEBUG_SERIAL
-        Serial.printf ("[%05d] ", millis());
-        Serial.println("Done.");
-#endif
-
-#if DEBUG_SERIAL
-        Serial.printf ("[%05d] ", millis());
-        Serial.println("Rebooting...");
-#endif
-
-        // Reboot using GPIO16 (Tied to RST)
-        delay (250);
-        pinMode(16, OUTPUT);
-        digitalWrite(16, LOW);
-      }
-
-      // Try to open new config file
-      ConfigFile = SDCard.open (ConfigFilename, FILE_READ);
-
-      // Configuration file not found
-      if (!ConfigFile)
-      {
-#if DEBUG_SERIAL
-        Serial.printf ("[%05d] ", millis());
-        Serial.println("New configuration file not detected.");
-#endif
-
-        // Get configuration values from EEPROM
-#if DEBUG_SERIAL
-        Serial.printf ("[%05d] ", millis());
-        Serial.println("Getting last configuration from EEPROM...");
-#endif
-
-        // Get configuration values from EEPROM
-        EEPROMGetConfig (LogConfig);
-      }
-
-      // Configuration file was found
-      else
-      {
-#if DEBUG_SERIAL
-        Serial.printf ("[%05d] ", millis());
-        Serial.println("New configuration file detected. Parsing new values...");
-#endif
-
-        // Get configuration values from SD card - Store in NewConfig
-        SDGetConfig (NewConfig);
-
-        // Close the file
-        ConfigFile.close();
-
-#if DEBUG_SERIAL
-        Serial.printf ("[%05d] ", millis());
-        Serial.println("Done.");
-#endif
-
-#if DEBUG_SERIAL
-        Serial.printf ("[%05d] New log filename: \'%s\' \n", millis(), NewConfig.Filename);
-        Serial.printf ("[%05d] New log host: \'%s\' \n", millis(), NewConfig.HostURL);
-        Serial.printf ("[%05d] New log script ID: \'%s\' \n", millis(), NewConfig.ScriptID);
-        Serial.printf ("[%05d] New log timezone: %d GMT \n", millis(), NewConfig.Timezone);
-        Serial.printf ("[%05d] New WiFi SSID: \'%s\' \n", millis(), NewConfig.WifiSSID);
-        Serial.printf ("[%05d] New WiFi password: \'%s\' \n", millis(), NewConfig.WifiPsw);
-        Serial.printf ("[%05d] New sample interval: %d seconds \n", millis(), NewConfig.LogInterval);
-        Serial.printf ("[%05d] New wait on error: %d seconds \n", millis(), NewConfig.ErrorInterval);
-#endif
-
-#if DEBUG_SERIAL
-        Serial.printf ("[%05d] ", millis());
-        Serial.println("Saving new values in EEPROM...");
-#endif
-
-        // Save new values in EEPROM
-        EEPROMSetConfig (NewConfig);
-
-        // Get configuration values from EEPROM
-        EEPROMGetConfig (LogConfig);
-
-        // Set RTCPending flag to update RTC time - Saved in EEPROM in case update fails in this run
-        EEPROMSetRTCPending (true);
-
-#if DEBUG_SERIAL
-        Serial.printf ("[%05d] ", millis());
-        Serial.println("Done.");
-#endif
-
-#if DEBUG_SERIAL
-        Serial.printf ("[%05d] ", millis());
-        Serial.println("Deleting configuration file...");
-#endif
-
-        // Delete configuration file
-        if (!SDCard.remove(ConfigFilename))
-        {
-#if DEBUG_SERIAL
-          Serial.printf ("[%05d] ", millis());
-          Serial.println("Error deleting configuration file!");
-#endif
-        }
-
-#if DEBUG_SERIAL
-        Serial.printf ("[%05d] ", millis());
-        Serial.println("Done.");
-#endif
-      }
+      #if DEBUG_SERIAL
+      Serial.printf ("[%05d] Error initializing SD card! \n", millis());
+      #endif                
     }
+  }
+  
+  // SD card was not detected
+  else
+  {
+    // Clear flag
+    Flag.SDAvailable = false;     
+    
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] SD card not detected! \n", millis());
+    #endif
   }
 
   /* ----------------------------------------------------------------------------------------- */
+  // Firmware update
+  /* ----------------------------------------------------------------------------------------- */  
 
-#if DEBUG_SERIAL
-  Serial.printf ("[%05d] Log filename: \'%s\' \n", millis(), LogConfig.Filename);
-  Serial.printf ("[%05d] Log host: \'%s\' \n", millis(), LogConfig.HostURL);
-  Serial.printf ("[%05d] Log script ID: \'%s\' \n", millis(), LogConfig.ScriptID);
-  Serial.printf ("[%05d] Log timezone: %d GMT \n", millis(), LogConfig.Timezone);
-  Serial.printf ("[%05d] WiFi SSID: \'%s\' \n", millis(), LogConfig.WifiSSID);
-  Serial.printf ("[%05d] WiFi password: \'%s\' \n", millis(), LogConfig.WifiPsw);
-  Serial.printf ("[%05d] Sample interval: %d seconds \n", millis(), LogConfig.LogInterval);
-  Serial.printf ("[%05d] Wait on error: %d seconds \n", millis(), LogConfig.ErrorInterval);
-#endif
+  // SD card is was initialized
+  if (Flag.SDAvailable)
+  {
+     // Try to open new firmware file
+    FileNewFirmware = SDCard.open (FilenameNewFirmware, FILE_READ);   
+
+    // Firmware file was found and opened
+    if (FileNewFirmware)
+    {
+      // LED on
+      digitalWrite (PIN_LED, LOW);    
+      
+      #if DEBUG_SERIAL
+      Serial.printf ("[%05d] New firmware file detected. Updating... \n", millis());
+      #endif  
+
+      // Start update with max available SketchSpace
+      if (Update.begin(((ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000), U_FLASH))
+      {
+        // Read all bytes        
+        while (FileNewFirmware.available())
+        {
+          unsigned char Buffer[128];
+          FileNewFirmware.read((unsigned char *)Buffer, 128);
+          Update.write(Buffer, sizeof(Buffer));
+        }
+      }   
+      
+      // Update failed to start with max available SketchSpace
+      else
+      {
+        #if DEBUG_SERIAL
+        Serial.printf ("[%05d] Invalid firmware file! \n", millis());
+        #endif
+
+        // Jump to loop
+        return;
+      }
+
+      // Check if update was successful
+      Flag.NewFirmwareSuccess = Update.end (true);      
+
+      // Close the firmware file
+      FileNewFirmware.close();
+
+      // LED off
+      digitalWrite (PIN_LED, HIGH);
+      
+      // Update was successful
+      if (Flag.NewFirmwareSuccess)
+      {
+        #if DEBUG_SERIAL
+        Serial.printf ("[%05d] Done. \n", millis());
+        #endif
+                
+        #if DEBUG_SERIAL
+        Serial.printf ("[%05d] Removing firmware file... \n", millis());
+        #endif
+        
+        // Remove firmware file
+        if (SDCard.remove(FilenameNewFirmware))
+        {
+          #if DEBUG_SERIAL
+          Serial.printf ("[%05d] Done. \n", millis());  
+          #endif             
+        }
+
+        // Error removing firmware file
+        else
+        {
+          #if DEBUG_SERIAL
+          Serial.printf ("[%05d] Error removing firmware file! \n", millis());
+          #endif          
+        }
+
+        // Set RTCPending flag to update RTC time - Saved in EEPROM in case update fails in this run
+        Flag.PendingRTCUpdate = true;
+        setRTCPending (Flag.PendingRTCUpdate);   
+
+        // Set reboot pending flag
+        Flag.PendingReboot = true;        
+      }
+
+      // Error updating
+      else
+      {
+        #if DEBUG_SERIAL
+        Serial.printf ("[%05d] Error updating! \n", millis());
+        #endif
+
+        // Jump to loop
+        return;
+      }                              
+    }
+    
+    // Firmware file not found or failed to open
+    else
+    {
+      #if DEBUG_SERIAL
+      Serial.printf ("[%05d] New firmware not detected. \n", millis());
+      #endif
+    }    
+  }
 
   /* ----------------------------------------------------------------------------------------- */
+  // Config update
+  /* ----------------------------------------------------------------------------------------- */  
 
-#if DEBUG_SERIAL
-  Serial.printf ("[%05d] ", millis());
-  Serial.println ("Starting WiFi connection...");
-#endif
+  // SD card is was initialized
+  if (Flag.SDAvailable)
+  {
+     // Try to open new config file
+    FileNewConfig = SDCard.open (FilenameNewConfig, FILE_READ);   
 
-  // Start WiFi connection
-  WiFi.begin (LogConfig.WifiSSID, LogConfig.WifiPsw);
+    // Config file was found and opened
+    if (FileNewConfig)
+    {
+      // LED on
+      digitalWrite (PIN_LED, LOW);    
+      
+      #if DEBUG_SERIAL
+      Serial.printf ("[%05d] New configuration file detected. Updating... \n", millis());
+      #endif  
+
+      // Check if all parameters are correct in the file
+      Flag.NewConfigSuccess = getConfigSD (NewConfig);
+      
+      // Close the config file
+      FileNewConfig.close();
+
+      // Parameters were correct
+      if (Flag.NewConfigSuccess)
+      {
+        // Transfer NewConfig to EEPROM
+        setConfigEEPROM (NewConfig);
+      }
+      
+      // LED off
+      digitalWrite (PIN_LED, HIGH);
+      
+      // Update was successful
+      if (Flag.NewConfigSuccess)
+      {                
+        #if DEBUG_SERIAL
+        Serial.printf ("[%05d] Done. New config: \n", millis());
+        Serial.printf ("[%05d] LogFilename: \'%s\' \n", millis(), NewConfig.LogFilename);
+        Serial.printf ("[%05d] LogInterval: %d \n", millis(), NewConfig.LogInterval);
+        Serial.printf ("[%05d] LogWaitTime: %d \n", millis(), NewConfig.LogWaitTime);       
+        Serial.printf ("[%05d] LogTimezone: %d \n", millis(), NewConfig.LogTimezone);
+        Serial.printf ("[%05d] WifiEnabled: %d \n", millis(), NewConfig.WifiEnabled);
+        Serial.printf ("[%05d] WifiSyncEnable: %d \n", millis(), NewConfig.WifiSyncEnable);
+        Serial.printf ("[%05d] WifiSSID: \'%s\' \n", millis(), NewConfig.WifiSSID);
+        Serial.printf ("[%05d] WifiPsw: \'%s\' \n", millis(), NewConfig.WifiPsw);       
+        Serial.printf ("[%05d] WifiHostURL: \'%s\' \n", millis(), NewConfig.WifiHostURL);
+        Serial.printf ("[%05d] WifiScriptID: \'%s\' \n", millis(), NewConfig.WifiScriptID);
+        #endif
+                
+        #if DEBUG_SERIAL
+        Serial.printf ("[%05d] Removing configuration file... \n", millis());
+        #endif
+        
+        // Remove configuration file
+        if (SDCard.remove(FilenameNewConfig))
+        {
+          #if DEBUG_SERIAL
+          Serial.printf ("[%05d] Done. \n", millis());  
+          #endif             
+        }
+
+        // Error removing configuration file
+        else
+        {
+          #if DEBUG_SERIAL
+          Serial.printf ("[%05d] Error removing configuration file! \n", millis());
+          #endif          
+        }
+
+        // Set RTCPending flag to update RTC time - Saved in EEPROM in case update fails in this run
+        Flag.PendingRTCUpdate = true;
+        setRTCPending (Flag.PendingRTCUpdate);
+
+        // Set reboot pending flag
+        Flag.PendingReboot = true;
+      }
+
+      // Error updating config
+      else
+      {
+        #if DEBUG_SERIAL
+        Serial.printf ("[%05d] Error updating configuration! \n", millis());
+        #endif
+
+        // Jump to loop
+        return;
+      }                              
+    }
+    
+    // Config file not found or failed to open
+    else
+    {
+      #if DEBUG_SERIAL
+      Serial.printf ("[%05d] New configuration file not detected. \n", millis());
+      #endif
+    }    
+  }
 
   /* ----------------------------------------------------------------------------------------- */
+  // Reboot if new firmware or config was applied
+  /* ----------------------------------------------------------------------------------------- */  
 
-#if DEBUG_SERIAL
-  Serial.printf ("[%05d] ", millis());
-  Serial.println("Configuring DS1722...");
-#endif
+  if (Flag.PendingReboot)
+  {
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] Rebooting... \n", millis());
+    #endif
+    
+    // Reboot using GPIO16 (Tied to RST)
+    delay (250);
+    pinMode(16, OUTPUT);
+    digitalWrite(16, LOW);
+  }
+
+  /* ----------------------------------------------------------------------------------------- */
+  // Get configuration from EEPROM
+  /* ----------------------------------------------------------------------------------------- */   
+
+  #if DEBUG_SERIAL
+  Serial.printf ("[%05d] Loading configuration from EEPROM... \n", millis());
+  #endif
+  
+  // Configuration was correctly loaded from EEPROM
+  if (getConfigEEPROM (Config))
+  {
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] Done. Configuration: \n", millis());
+    Serial.printf ("[%05d] LogFilename: \'%s\' \n", millis(), Config.LogFilename);
+    Serial.printf ("[%05d] LogInterval: %d \n", millis(), Config.LogInterval);
+    Serial.printf ("[%05d] LogWaitTime: %d \n", millis(), Config.LogWaitTime);       
+    Serial.printf ("[%05d] LogTimezone: %d \n", millis(), Config.LogTimezone);
+    Serial.printf ("[%05d] WifiEnabled: %d \n", millis(), Config.WifiEnabled);
+    Serial.printf ("[%05d] WifiSyncEnable: %d \n", millis(), Config.WifiSyncEnable);
+    Serial.printf ("[%05d] WifiSSID: \'%s\' \n", millis(), Config.WifiSSID);
+    Serial.printf ("[%05d] WifiPsw: \'%s\' \n", millis(), Config.WifiPsw);       
+    Serial.printf ("[%05d] WifiHostURL: \'%s\' \n", millis(), Config.WifiHostURL);
+    Serial.printf ("[%05d] WifiScriptID: \'%s\' \n", millis(), Config.WifiScriptID);
+    #endif  
+  }
+
+  // An error occur loading configuration from EEPROM
+  else
+  {
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] Error getting configuration from EEPROM! \n", millis());  
+    Serial.printf ("[%05d] Trying again in %d seconds \n", millis(), ERROR_SLEEP_INTERVAL);  
+    #endif         
+
+    // Enter deep sleep
+    ESP.deepSleep(ERROR_SLEEP_INTERVAL * 1e6);            
+  }
+
+  /* ----------------------------------------------------------------------------------------- */
+  // Check if data logging is possible
+  /* ----------------------------------------------------------------------------------------- */
+
+  // SD card is not availabe and WiFi is disabled
+  if (!Flag.SDAvailable && !Config.WifiEnabled)
+  {
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] Imposible to save data! No SD card or WiFi are available! \n", millis());  
+    Serial.printf ("[%05d] Trying again in %d seconds \n", millis(), ERROR_SLEEP_INTERVAL);  
+    #endif         
+
+    // Enter deep sleep
+    ESP.deepSleep(ERROR_SLEEP_INTERVAL * 1e6);        
+  }
+
+  /* ----------------------------------------------------------------------------------------- */
+  // Start WiFi connection if necessary
+  /* ----------------------------------------------------------------------------------------- */  
+
+  // WiFi functions are enable
+  if (Config.WifiEnabled)
+  {
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] Starting WiFi connection... \n", millis()); 
+    #endif
+
+    // Start WiFi connection
+    WiFi.begin (Config.WifiSSID, Config.WifiPsw);
+
+    // Get request time
+    Time.RequestWifi = millis ();
+  }
+
+  /* ----------------------------------------------------------------------------------------- */
+  // Init DS1722 temperature sensor
+  /* ----------------------------------------------------------------------------------------- */  
+  
+  #if DEBUG_SERIAL
+  Serial.printf ("[%05d] Configuring DS1722 temperature sensor... \n", millis()); 
+  Serial.printf ("[%05d] %s library v%s \n", millis(), DS1722_CODE_NAME, DS1722_CODE_VERSION); 
+  #endif
 
   // Set DS1722 conversion mode
   TS.setMode (DS1722_MODE_ONESHOT);
@@ -511,366 +616,87 @@ void setup()
   // Request a temperature conversion - Will be ready in 1.2s @ 12bits
   TS.requestConversion ();
 
-#if DEBUG_SERIAL
-  Serial.printf ("[%05d] ", millis());
-  Serial.println("Done.");
-#endif
+  // Get request time
+  Time.RequestTS = millis ();  
+
+  #if DEBUG_SERIAL
+  Serial.printf ("[%05d] Done. \n", millis());  
+  #endif
 
   /* ----------------------------------------------------------------------------------------- */
+  // Init DS390 real time clock
+  /* ----------------------------------------------------------------------------------------- */  
 
-#if DEBUG_SERIAL
-  Serial.printf ("[%05d] ", millis());
-  Serial.println("Configuring DS1390...");
-#endif
+  #if DEBUG_SERIAL
+  Serial.printf ("[%05d] Configuring DS1390 RTC... \n", millis()); 
+  Serial.printf ("[%05d] %s library v%s \n", millis(), DS1390_CODE_NAME, DS1390_CODE_VERSION); 
+  #endif
 
   // Delay for DS1390 boot (mandatory)
-  delay (200);
+  delay (200);  
 
   // Check if memory was lost recently
-  Sample.TimeValid = RTC.getValidation ();
+  Sample.RTCValid = RTC.getValidation ();  
 
   // Unreliable RTC data
-  if (!Sample.TimeValid)
+  if (!Sample.RTCValid)
   {
     // Set RTCPending flag to update RTC time - Saved in EEPROM in case update fails in this run
-    EEPROMSetRTCPending (true);
+    Flag.PendingRTCUpdate = true;
+    setRTCPending (Flag.PendingRTCUpdate);   
 
-#if DEBUG_SERIAL
-    Serial.printf ("[%05d] ", millis());
-    Serial.println ("RTC memory content was recently lost!");
-#endif
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] RTC memory content was recently lost! Timestamp is unreliable! \n", millis());
+    #endif
   }
 
   // RTC data is valid
   else
   {
-#if DEBUG_SERIAL
-    Serial.printf ("[%05d] ", millis());
-    Serial.println ("RTC memory content is valid.");
-#endif
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] RTC memory content is valid. \n", millis());
+    #endif
   }
 
   // Set DS1390 trickle charger mode (250 ohms with one series diode)
-  RTC.setTrickleChargerMode (DS1390_TCH_250_D);
+  RTC.setTrickleChargerMode (DS1390_TCH_250_D);  
 
-#if DEBUG_SERIAL
-  Serial.printf ("[%05d] ", millis());
-  Serial.println("Done.");
-#endif
+  #if DEBUG_SERIAL
+  Serial.printf ("[%05d] Done. \n", millis());  
+  #endif
 
   /* ----------------------------------------------------------------------------------------- */
+  // Sample data
+  /* ----------------------------------------------------------------------------------------- */ 
 
   // LED on
   digitalWrite (PIN_LED, LOW);
 
-  // Calculate battery voltage
-  Sample.BatteryVoltage = analogRead(PIN_ADC) * ADC_GAIN;
+  #if DEBUG_SERIAL
+  Serial.printf ("[%05d] Sampling data... \n", millis());  
+  #endif  
 
   // Get current time
-  Sample.TimeEpoch = RTC.getDateTimeEpoch (LogConfig.Timezone);
+  Sample.RTCEpoch = RTC.getDateTimeEpoch (Config.LogTimezone);
+
+  // Get battery voltage
+  Sample.BatteryVoltage = analogRead(PIN_ADC) * ADC_GAIN;  
+
+  // Wait if temperature sample is not finish
+  while ((millis () - Time.RequestTS) < 1200);
 
   // Get DS172 temperature
   Sample.Temperature = TS.getTemperature();
 
+  #if DEBUG_SERIAL
+  Serial.printf ("[%05d] Done. \n", millis());  
+  Serial.printf ("[%05d] Epoch: %d (%s) \n", millis(), Sample.RTCEpoch, Sample.RTCValid ? "Reliable" : "Unreliable");  
+  Serial.printf ("[%05d] Vbat: %.4f V \n", millis(), Sample.BatteryVoltage);
+  Serial.printf ("[%05d] Temperature: %.4f C \n", millis(), Sample.Temperature);    
+  #endif  
+  
   // LED off
   digitalWrite (PIN_LED, HIGH);
-
-#if DEBUG_SERIAL
-  Serial.printf ("[%05d] Epoch: %d \n", millis(), Sample.TimeEpoch);
-  Serial.printf ("[%05d] Vbat: %.4f V \n", millis(), Sample.BatteryVoltage);
-  Serial.printf ("[%05d] Temperature: %.4f C \n", millis(), Sample.Temperature);
-#endif
-
-  /* ----------------------------------------------------------------------------------------- */
-
-#if DEBUG_SERIAL
-  Serial.printf ("[%05d] ", millis());
-  Serial.println("Waiting for WiFi to connect...");
-#endif
-
-  // Check connection status
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    // Connection timeout exceded
-    if (ConnectionCounter >= (WIFI_TIMEOUT * 4))
-    {
-      // Online log not available
-      LogToWifi = false;
-
-#if DEBUG_SERIAL
-      Serial.printf ("[%05d] ", millis());
-      Serial.println("WiFi connection timed-out!");
-#endif
-
-      // Exit while loop
-      break;
-    }
-
-    // Increase timeout counter
-    else
-    {
-      // 1 second delay
-      delay(250);
-
-      // Increase counter
-      ConnectionCounter++;
-    }
-  }
-
-  // WiFi connected
-  if (WiFi.status() == WL_CONNECTED)
-  {
-    // Online log available
-    LogToWifi = true;
-
-#if DEBUG_SERIAL
-    Serial.printf ("[%05d] ", millis());
-    Serial.println("WiFi connected.");
-#endif
-  }
-
-  /* ----------------------------------------------------------------------------------------- */
-
-  // Post data if WiFi is connected
-  if (LogToWifi)
-  {
-#if DEBUG_SERIAL
-    Serial.printf ("[%05d] ", millis());
-    Serial.println ("Connecting to host...");
-#endif
-
-    // Start HTTP client connection to host
-    LogClient.begin (LogConfig.HostURL);
-
-    // Define request timeout
-    LogClient.setTimeout(5000);
-
-    // Define request content type - Required to perform posts
-    LogClient.addHeader("Content-Type", "application/x-www-form-urlencoded");
-
-    // Delay to establish connection
-    delay (100);
-
-#if DEBUG_SERIAL
-    Serial.printf ("[%05d] ", millis());
-    Serial.println("Done.");
-#endif
-
-    // Prepare log buffer
-    snprintf (Buffer, sizeof(Buffer), "id=%s&log=EP:%010d-VB:%.4f-TS:%.4f-ST:%d-SD:%d",
-              LogConfig.ScriptID, Sample.TimeEpoch, Sample.BatteryVoltage, Sample.Temperature, Sample.TimeValid, LogToSD);
-
-#if DEBUG_SERIAL
-    Serial.printf ("[%05d] ", millis());
-    Serial.println ("Posting...");
-#endif
-
-    // HTTP post request to host and get response code
-    short PostResponseCode = LogClient.POST(Buffer);
-
-    // Close client connection
-    LogClient.end();
-
-    // Post was successful
-    if (PostResponseCode != -1)
-    {
-      LogWifiSuccess = true;
-
-#if DEBUG_SERIAL
-      Serial.printf ("[%05d] ", millis());
-      Serial.println ("Done.");
-#endif
-    }
-
-    // Post failed
-    else
-    {
-      LogWifiSuccess = false;
-
-#if DEBUG_SERIAL
-      Serial.printf ("[%05d] ", millis());
-      Serial.println ("Failed to post data!");
-#endif
-    }
-
-#if DEBUG_SERIAL
-    Serial.printf ("[%05d] ", millis());
-    Serial.printf ("Response code: %d \n", PostResponseCode);
-#endif
-  }
-
-  /* ----------------------------------------------------------------------------------------- */
-
-  // Save data to SD card if available
-  if (LogToSD)
-  {
-    // Open the log file
-    LogFile = SDCard.open(LogConfig.Filename, FILE_WRITE);
-
-    // If the file opened okay, write to it
-    if (LogFile)
-    {
-#if DEBUG_SERIAL
-      Serial.printf ("[%05d] ", millis());
-      Serial.println ("Writing to SD card...");
-#endif
-
-      // Prepare log buffer
-      snprintf (Buffer, sizeof(Buffer), "%010d; %.4f;  %.4f; %d; %d",
-                Sample.TimeEpoch, Sample.BatteryVoltage, Sample.Temperature, Sample.TimeValid, LogWifiSuccess);
-
-      // Write to file
-      LogFile.println(Buffer);
-
-      // Close the file
-      LogFile.close();
-
-      // Write was successful
-      LogSDSuccess = true;
-
-#if DEBUG_SERIAL
-      Serial.printf ("[%05d] ", millis());
-      Serial.println("Done.");
-#endif
-    }
-
-    // Error opening the file
-    else
-    {
-      LogSDSuccess = false;
-
-#if DEBUG_SERIAL
-      Serial.printf ("[%05d] ", millis());
-      Serial.println ("Error opening the file!");
-#endif
-    }
-  }
-
-  /* ----------------------------------------------------------------------------------------- */
-
-  if (LogWifiSuccess && LogSDSuccess)
-  {
-#if DEBUG_SERIAL
-    Serial.printf ("[%05d] ", millis());
-    Serial.println ("Data was saved online and in the SD card.");
-#endif
-  }
-
-  else if (LogWifiSuccess)
-  {
-#if DEBUG_SERIAL
-    Serial.printf ("[%05d] ", millis());
-    Serial.println ("Data was saved only online.");
-#endif
-  }
-
-  else if (LogSDSuccess)
-  {
-#if DEBUG_SERIAL
-    Serial.printf ("[%05d] ", millis());
-    Serial.println ("Data was saved only in the SD card.");
-#endif
-  }
-
-  else
-  {
-#if DEBUG_SERIAL
-    Serial.printf ("[%05d] ", millis());
-    Serial.println ("Data was not saved!");
-#endif
-  }
-
-  /* ----------------------------------------------------------------------------------------- */
-
-  // RTC time needs to be updated
-  if (EEPROMGetRTCPending ())
-  {
-    // WiFi is connected
-    if (LogToWifi)
-    {
-#if DEBUG_SERIAL
-      Serial.printf ("[%05d] ", millis());
-      Serial.println ("RTC time update is pending. Updating...");
-#endif
-
-      // Start NTP client
-      NTP.begin();
-
-      // Get NTP time
-      if (NTP.update())
-      {
-        // Update DS1390 time using NTP Epoch timestamp
-        RTC.setDateTimeEpoch (NTP.getEpochTime(), LogConfig.Timezone);
-
-        // Reset update pending flag
-        EEPROMSetRTCPending (false);
-
-#if DEBUG_SERIAL
-        Serial.printf ("[%05d] ", millis());
-        Serial.println ("Done.");
-#endif
-      }
-
-      else
-      {
-#if DEBUG_SERIAL
-        Serial.printf ("[%05d] ", millis());
-        Serial.println ("Error getting data from NTC server!");
-#endif
-      }
-    }
-
-    else
-    {
-#if DEBUG_SERIAL
-      Serial.printf ("[%05d] ", millis());
-      Serial.println ("RTC time update is pending but WiFi is not available!");
-#endif
-    }
-  }
-
-  /* ----------------------------------------------------------------------------------------- */
-
-  // Battery voltage is low
-  if (Sample.BatteryVoltage < VBAT_LOW)
-  {
-#if DEBUG_SERIAL
-    Serial.printf ("[%05d] ", millis());
-    Serial.println ("Low battery!");
-    Serial.printf ("[%05d] ", millis());
-    Serial.println ("Shutting down...");
-#endif
-
-    // Flash LED to inform user
-    FlashLED ();
-
-    // Enter deep sleep forever
-    ESP.deepSleep(0);
-  }
-
-  /* ----------------------------------------------------------------------------------------- */
-
-  // Data was not saved
-  if (!LogWifiSuccess && !LogSDSuccess)
-  {
-#if DEBUG_SERIAL
-    Serial.printf ("[%05d] ", millis());
-    Serial.printf ("Trying again in %d seconds... \n", LogConfig.ErrorInterval);
-#endif
-
-    // Call error function
-    RunOnError ();
-  }
-
-  /* ----------------------------------------------------------------------------------------- */
-
-#if DEBUG_SERIAL
-  Serial.printf ("[%05d] ", millis());
-  Serial.printf("Next update in %d seconds... \n", LogConfig.LogInterval);
-#endif
-
-  // Enter deep sleep
-  ESP.deepSleep(LogConfig.LogInterval * 1e6);
 }
 
 /* ------------------------------------------------------------------------------------------- */
@@ -882,91 +708,191 @@ void setup()
 
 void loop ()
 {
+  // Toggle LED
+  digitalWrite(PIN_LED, !digitalRead(PIN_LED));
+
+  // Delay
+  delay (250);
+
+  // Get battery voltage
+  Sample.BatteryVoltage = analogRead(PIN_ADC) * ADC_GAIN; 
+  
+  // Enter deep sleep forever if voltage is too low
+  if (Sample.BatteryVoltage < VBAT_LOW)
+  {
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] Low battery! Shuting down... \n", millis());
+    #endif     
+
+    ESP.deepSleep(0);
+  }
 }
 
 /* ------------------------------------------------------------------------------------------- */
-// Name:        RunOnError
-// Description: This function is called when an error occur
+// Name:        getRTCPending
+// Description: Gets the RTCPending flag value from EEPROM
 // Arguments:   None
+// Returns:     Flag value
+/* ------------------------------------------------------------------------------------------- */
+
+bool getRTCPending ()
+{
+  // Read upper and lower bytes of Interval
+  return EEPROM.read (ADDR_RTC_PENDING);
+}
+
+/* ------------------------------------------------------------------------------------------- */
+// Name:        setRTCPending
+// Description: Writes the RTCPending flag value in EEPROM
+// Arguments:   Flag value
 // Returns:     None
 /* ------------------------------------------------------------------------------------------- */
 
-void RunOnError ()
+void setRTCPending (bool Value)
 {
-  // Flash LED to inform user
-  FlashLED ();
+  // Write upper and lower bytes of Interval
+  EEPROM.write (ADDR_RTC_PENDING, Value);
 
-  // Enter deep sleep
-  ESP.deepSleep(LogConfig.ErrorInterval * 1e6);
+  // Apply changes in EEPROM
+  EEPROM.commit();
 }
 
-/* ------------------------------------------------------------------------------------------- */
-// Name:        FlashLED
-// Description: Flashes the onboard LED
-// Arguments:   None
-// Returns:     None
-/* ------------------------------------------------------------------------------------------- */
-
-void FlashLED ()
-{
-  digitalWrite (PIN_LED, LOW);
-  delay(200);
-  digitalWrite (PIN_LED, HIGH);
-  delay(200);
-  digitalWrite (PIN_LED, LOW);
-  delay(200);
-  digitalWrite (PIN_LED, HIGH);
-}
 
 /* ------------------------------------------------------------------------------------------- */
-// Name:        SDGetConfig
-// Description: Gets all the configuration variables from SD card (ConfigFilename)
+// Name:        getConfigSD
+// Description: Gets all the configuration variables from SD card (FilenameNewConfig)
 // Arguments:   Buffer - Pointer to the buffer struct
-// Returns:     None
+// Returns:     true if all parameters were parsed and false otherwise
 /* ------------------------------------------------------------------------------------------- */
 
-void SDGetConfig (StructConfig &Buffer)
+bool getConfigSD (StructConfig &Buffer)
 {
   // Line buffer
   char BufferLine[100];
 
   // End of line index position
-  unsigned char EOLPos;
+  unsigned char EOLPos = 0;
 
-  // Read all lines of file sequentially
-  while ((EOLPos = ConfigFile.fgets(BufferLine, sizeof(BufferLine))) > 0)
+  // Checksum - 10 parameters are expected. Set 1 bit of Checksum for each
+  unsigned int NewConfigChecksum = 0;
+
+  // At this point, FileNewConfig is already open. Read all lines of file sequentially
+  while ((EOLPos = FileNewConfig.fgets(BufferLine, sizeof(BufferLine))) > 0)
   {
     // Proccess only lines that contain variables
     if (BufferLine[0] == '$')
     {
-      // Current line is $Filename
-      if (strstr (BufferLine, "$Filename "))
+      // Current line is $LogFilename
+      if (strstr (BufferLine, "$LogFilename "))
       {
         // Start index to extract text
-        unsigned char StartPos = 10;
+        unsigned char StartPos = 13;
 
         // Copy value to new config buffer from StartPos to '\n'
-        strncpy (Buffer.Filename, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+        strncpy (Buffer.LogFilename, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+
+        // Increment checksum
+        NewConfigChecksum += 0x001;
       }
 
-      // Current line is $HostURL
-      else if (strstr (BufferLine, "$HostURL "))
+      // Current line is $LogInterval
+      else if (strstr (BufferLine, "$LogInterval "))
       {
         // Start index to extract text
-        unsigned char StartPos = 9;
+        unsigned char StartPos = 12;
+
+        // Buffer
+        char Value[5] = {0};
 
         // Copy value to buffer from StartPos to '\n'
-        strncpy (Buffer.HostURL, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+        strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+
+        // Convert value to number
+        Buffer.LogInterval = atoi(Value);
+
+        // Increment checksum if value is whithin limits
+        if ((Buffer.LogInterval >= 10) && (Buffer.LogInterval <= 3600))
+          NewConfigChecksum += 0x002;        
       }
 
-      // Current line is $ScriptID
-      else if (strstr (BufferLine, "$ScriptID "))
+      // Current line is $LogWaitTime
+      else if (strstr (BufferLine, "$LogWaitTime "))
       {
         // Start index to extract text
-        unsigned char StartPos = 10;
+        unsigned char StartPos = 12;
+
+        // Buffer
+        char Value[5] = {0};
 
         // Copy value to buffer from StartPos to '\n'
-        strncpy (Buffer.ScriptID, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+        strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+
+        // Convert value to number
+        Buffer.LogWaitTime = atoi(Value);
+
+        // // Increment checksum if value is whithin limits
+        if ((Buffer.LogWaitTime >= 1) && (Buffer.LogWaitTime <= 3600))          
+          NewConfigChecksum += 0x004;        
+      }
+
+      // Current line is $LogTimezone
+      else if (strstr (BufferLine, "$LogTimezone "))
+      {
+        // Start index to extract text
+        unsigned char StartPos = 13;
+
+        // Buffer
+        char Value[4] = {0};
+
+        // Copy value to buffer from StartPos to '\n'
+        strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+
+        // Convert value to number
+        Buffer.LogTimezone = atoi(Value);
+
+        // Increment checksum if value is whithin limits
+        if ((Buffer.LogTimezone >= -12) && (Buffer.LogTimezone <= 12))
+          NewConfigChecksum += 0x008;          
+      }
+
+      // Current line is $WifiEnabled
+      else if (strstr (BufferLine, "$WifiEnabled "))
+      {
+        // Start index to extract text
+        unsigned char StartPos = 13;
+
+        // Buffer
+        char Value[2] = {0};
+
+        // Copy value to buffer from StartPos to '\n'
+        strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+
+        // Convert value to number
+        Buffer.WifiEnabled = atoi(Value);
+
+        // Increment checksum if value is whithin limits
+        if ((Buffer.WifiEnabled == 0) || (Buffer.WifiEnabled == 1))
+          NewConfigChecksum += 0x010;          
+      }
+
+      // Current line is $WifiSyncEnable
+      else if (strstr (BufferLine, "$WifiSyncEnable "))
+      {
+        // Start index to extract text
+        unsigned char StartPos = 16;
+
+        // Buffer
+        char Value[2] = {0};
+
+        // Copy value to buffer from StartPos to '\n'
+        strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+
+        // Convert value to number
+        Buffer.WifiSyncEnable = atoi(Value);
+
+        // Increment checksum if value is whithin limits
+        if ((Buffer.WifiSyncEnable == 0) || (Buffer.WifiSyncEnable == 1))
+          NewConfigChecksum += 0x020;          
       }
 
       // Current line is $WifiSSID
@@ -977,6 +903,9 @@ void SDGetConfig (StructConfig &Buffer)
 
         // Copy value to buffer from StartPos to '\n'
         strncpy (Buffer.WifiSSID, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+
+        // Increment checksum
+        NewConfigChecksum += 0x040;        
       }
 
       // Current line is $WifiPsw
@@ -987,389 +916,441 @@ void SDGetConfig (StructConfig &Buffer)
 
         // Copy value to buffer from StartPos to '\n'
         strncpy (Buffer.WifiPsw, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+
+        // Increment checksum
+        NewConfigChecksum += 0x080;        
       }
 
-      // Current line is $Timezone
-      else if (strstr (BufferLine, "$Timezone "))
+      // Current line is $WifiHostURL
+      else if (strstr (BufferLine, "$WifiHostURL "))
       {
         // Start index to extract text
-        unsigned char StartPos = 10;
-
-        // Buffer
-        char Value[8] = {0};
+        unsigned char StartPos = 13;
 
         // Copy value to buffer from StartPos to '\n'
-        strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+        strncpy (Buffer.WifiHostURL, (BufferLine + StartPos), (EOLPos - StartPos - 1));
 
-        // Convert value to number
-        Buffer.Timezone = constrain(atoi(Value), -12, 12);
+        // Increment checksum
+        NewConfigChecksum += 0x100;           
       }
 
-      // Current line is $LogInterval
-      else if (strstr (BufferLine, "$LogInterval "))
+      // Current line is $WifiScriptID
+      else if (strstr (BufferLine, "$WifiScriptID "))
       {
         // Start index to extract text
-        unsigned char StartPos = 12;
-
-        // Buffer
-        char Value[8] = {0};
+        unsigned char StartPos = 14;
 
         // Copy value to buffer from StartPos to '\n'
-        strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+        strncpy (Buffer.WifiScriptID, (BufferLine + StartPos), (EOLPos - StartPos - 1));
 
-        // Convert value to number
-        Buffer.LogInterval = constrain(atoi(Value), 1, 65535);
-      }
-
-      // Current line is $ErrorInterval
-      else if (strstr (BufferLine, "$ErrorInterval "))
-      {
-        // Start index to extract text
-        unsigned char StartPos = 15;
-
-        // Buffer
-        char Value[8] = {0};
-
-        // Copy value to buffer from StartPos to '\n'
-        strncpy (Value, (BufferLine + StartPos), (EOLPos - StartPos - 1));
-
-        // Convert value to number
-        Buffer.ErrorInterval = constrain(atoi(Value), 1, 65535);
+        // Increment checksum
+        NewConfigChecksum += 0x200;          
       }
     }
   }
+
+  // Return true if all parameters were parsed
+  if (NewConfigChecksum == 0x3FF)
+    return true;
+  else
+    return false;
 }
 
 /* ------------------------------------------------------------------------------------------- */
-// Name:        EEPROMGetConfig
+// Name:        getConfigEEPROM
 // Description: Gets all the configuration variables from EEPROM
 // Arguments:   Buffer - Pointer to the buffer struct
-// Returns:     None
+// Returns:     true if all parameters were parsed and false otherwise
 /* ------------------------------------------------------------------------------------------- */
 
-void EEPROMGetConfig (StructConfig &Buffer)
+bool getConfigEEPROM (StructConfig &Buffer)
 {
-  // Get each value from EEPROM
-  EEPROMGetLogFilename (Buffer.Filename);
-  EEPROMGetLogHost (Buffer.HostURL);
-  EEPROMGetScriptID (Buffer.ScriptID);
-  EEPROMGetWifiSSID (Buffer.WifiSSID);
-  EEPROMGetWifiPsw (Buffer.WifiPsw);
-  EEPROMGetTimezone (&Buffer.Timezone);
-  EEPROMGetLogInterval (&Buffer.LogInterval);
-  EEPROMGetErrorInterval (&Buffer.ErrorInterval);
-}
-
-/* ------------------------------------------------------------------------------------------- */
-// Name:        EEPROMSetConfig
-// Description: Sets all the configuration variables inm EEPROM
-// Arguments:   Buffer - Pointer to the buffer struct
-// Returns:     None
-/* ------------------------------------------------------------------------------------------- */
-
-void EEPROMSetConfig (StructConfig &Buffer)
-{
-  // Set each value in EEPROM
-  EEPROMSetLogFilename (Buffer.Filename);
-  EEPROMSetLogHost (Buffer.HostURL);
-  EEPROMSetScriptID (Buffer.ScriptID);
-  EEPROMSetWifiSSID (Buffer.WifiSSID);
-  EEPROMSetWifiPsw (Buffer.WifiPsw);
-  EEPROMSetTimezone (Buffer.Timezone);
-  EEPROMSetLogInterval (Buffer.LogInterval);
-  EEPROMSetErrorInterval (Buffer.ErrorInterval);
-}
-
-/* ------------------------------------------------------------------------------------------- */
-// Name:        EEPROMGetLogFilename
-// Description: Gets the log filename from EEPROM
-// Arguments:   Buffer - Pointer to the buffer array (64 bytes)
-// Returns:     None
-/* ------------------------------------------------------------------------------------------- */
-
-void EEPROMGetLogFilename (char *Buffer)
-{
+  // Buffer index position for char arrays
   unsigned char Index = 0;
-  unsigned int Addr = ADDR_FILENAME;
+  
+  // Address to be read
+  unsigned int Addr = 0;
 
-  // Read all chars until carriage return or 64 read bytes
+  // MSB and LSB buffers
+  unsigned char MSB = 0;
+  unsigned char LSB = 0;  
+
+  // Checksum - Sum of all read bytes
+  unsigned long Checksum = 0;  
+
+  // Checksum - Stored in EEPROM
+  unsigned long EEPROMChecksum = 0;
+
+  /* ----------------------------------------------------------------------------------------- */
+  
+  // Get LogFilename
+  Addr = ADDR_LOG_FILENAME;
+  Index = 0;
+
+  // Read data until carriage return or 64 read bytes
   while ((EEPROM.read(Addr)) != '\n' && (Index < 64))
-    Buffer[Index++] = EEPROM.read(Addr++);
-}
+  {
+    // Save data to buffer  
+    Buffer.LogFilename[Index] = EEPROM.read(Addr);
 
-/* ------------------------------------------------------------------------------------------- */
-// Name:        EEPROMSetLogFilename
-// Description: Writes the log filename in EEPROM
-// Arguments:   Buffer - Pointer to the array to be written (64 bytes)
-// Returns:     None
-/* ------------------------------------------------------------------------------------------- */
+    // Add byte to checksum
+    Checksum += Buffer.LogFilename[Index];
 
-void EEPROMSetLogFilename (const char *Buffer)
-{
-  unsigned int Addr = ADDR_FILENAME;
+    // Increase index and address
+    Index++;
+    Addr++;
+  }
 
-  // Write all chars
-  while (*Buffer)
-    EEPROM.write(Addr++, *Buffer++);
+  /* ----------------------------------------------------------------------------------------- */
 
-  // Write carriage return
-  EEPROM.write(Addr, '\n');
+  // Get LogInterval - Read upper and lower bytes
+  MSB = EEPROM.read (ADDR_LOG_INTERVAL);
+  LSB = EEPROM.read (ADDR_LOG_INTERVAL + 1);
 
-  // Apply changes in EEPROM
-  EEPROM.commit();
-}
+  // Save to buffer
+  Buffer.LogInterval = (MSB << 8) + LSB;
 
-/* ------------------------------------------------------------------------------------------- */
-// Name:        EEPROMGetLogHost
-// Description: Gets the host url from EEPROM
-// Arguments:   Buffer - Pointer to the buffer array (64 bytes)
-// Returns:     None
-/* ------------------------------------------------------------------------------------------- */
+  // Add bytes to checksum
+  Checksum += MSB;  
+  Checksum += LSB;
 
-void EEPROMGetLogHost (char *Buffer)
-{
-  unsigned char Index = 0;
-  unsigned int Addr = ADDR_HOSTURL;
+  /* ----------------------------------------------------------------------------------------- */
 
-  // Read all chars until carriage return or 64 read bytes
-  while ((EEPROM.read(Addr)) != '\n' && (Index < 64))
-    Buffer[Index++] = EEPROM.read(Addr++);
-}
+  // Get LogWaitTime - Read upper and lower bytes
+  MSB = EEPROM.read (ADDR_LOG_WAIT_TIME);
+  LSB = EEPROM.read (ADDR_LOG_WAIT_TIME + 1);
 
-/* ------------------------------------------------------------------------------------------- */
-// Name:        EEPROMSetLogHost
-// Description: Writes the host url in EEPROM
-// Arguments:   Buffer - Pointer to the array to be written (64 bytes)
-// Returns:     None
-/* ------------------------------------------------------------------------------------------- */
+  // Save to buffer
+  Buffer.LogWaitTime = (MSB << 8) + LSB;
 
-void EEPROMSetLogHost (const char *Buffer)
-{
-  unsigned int Addr = ADDR_HOSTURL;
+  // Add bytes to checksum
+  Checksum += MSB;  
+  Checksum += LSB;
 
-  // Write all chars
-  while (*Buffer)
-    EEPROM.write(Addr++, *Buffer++);
+  /* ----------------------------------------------------------------------------------------- */
 
-  // Write carriage return
-  EEPROM.write(Addr, '\n');
+  // Get LogTimezone - Read upper and lower bytes
+  MSB = EEPROM.read (ADDR_LOG_TIMEZONE);
+  LSB = EEPROM.read (ADDR_LOG_TIMEZONE + 1);
 
-  // Apply changes in EEPROM
-  EEPROM.commit();
-}
+  // Save to buffer
+  Buffer.LogTimezone = (short)((MSB << 8) + LSB);
 
-/* ------------------------------------------------------------------------------------------- */
-// Name:        EEPROMGetScriptID
-// Description: Gets Google script ID from EEPROM
-// Arguments:   Buffer - Pointer to the buffer array (64 bytes)
-// Returns:     None
-/* ------------------------------------------------------------------------------------------- */
+  // Add bytes to checksum
+  Checksum += MSB;  
+  Checksum += LSB;
 
-void EEPROMGetScriptID (char *Buffer)
-{
-  unsigned char Index = 0;
-  unsigned int Addr = ADDR_SCRIPTID;
+  /* ----------------------------------------------------------------------------------------- */
 
-  // Read all chars until carriage return or 64 read bytes
-  while ((EEPROM.read(Addr)) != '\n' && (Index < 64))
-    Buffer[Index++] = EEPROM.read(Addr++);
-}
+  // Get WifiEnabled
+  Buffer.WifiEnabled = EEPROM.read (ADDR_WIFI_ENABLED);
 
-/* ------------------------------------------------------------------------------------------- */
-// Name:        EEPROMSetScriptID
-// Description: Writes Google script ID in EEPROM
-// Arguments:   Buffer - Pointer to the array to be written (64 bytes)
-// Returns:     None
-/* ------------------------------------------------------------------------------------------- */
+  // Add byte to checksum
+  Checksum += Buffer.WifiEnabled;  
 
-void EEPROMSetScriptID (const char *Buffer)
-{
-  unsigned int Addr = ADDR_SCRIPTID;
+  /* ----------------------------------------------------------------------------------------- */
 
-  // Write all chars
-  while (*Buffer)
-    EEPROM.write(Addr++, *Buffer++);
+  // Get WifiSyncEnable
+  Buffer.WifiSyncEnable = EEPROM.read (ADDR_WIFI_SYNC);
 
-  // Write carriage return
-  EEPROM.write(Addr, '\n');
+  // Add byte to checksum
+  Checksum += Buffer.WifiSyncEnable;  
 
-  // Apply changes in EEPROM
-  EEPROM.commit();
-}
+  /* ----------------------------------------------------------------------------------------- */
+  
+  // Get WifiSSID
+  Addr = ADDR_WIFI_SSID;
+  Index = 0;
 
-/* ------------------------------------------------------------------------------------------- */
-// Name:        EEPROMGetWifiSSID
-// Description: Gets the WiFi SSID from EEPROM
-// Arguments:   Buffer - Pointer to the buffer array (32 bytes)
-// Returns:     None
-/* ------------------------------------------------------------------------------------------- */
-
-void EEPROMGetWifiSSID (char *Buffer)
-{
-  unsigned char Index = 0;
-  unsigned int Addr = ADDR_WIFI_SSID;
-
-  // Read all chars until carriage return or 32 read bytes
+  // Read data until carriage return or 32 read bytes
   while ((EEPROM.read(Addr)) != '\n' && (Index < 32))
-    Buffer[Index++] = EEPROM.read(Addr++);
-}
+  {
+    // Save data to buffer  
+    Buffer.WifiSSID[Index] = EEPROM.read(Addr);
 
-/* ------------------------------------------------------------------------------------------- */
-// Name:        EEPROMSetWifiSSID
-// Description: Writes the WiFi SSID in EEPROM
-// Arguments:   Buffer - Pointer to the array to be written (32 bytes)
-// Returns:     None
-/* ------------------------------------------------------------------------------------------- */
+    // Add byte to checksum
+    Checksum += Buffer.WifiSSID[Index];
 
-void EEPROMSetWifiSSID (const char *Buffer)
-{
-  unsigned int Addr = ADDR_WIFI_SSID;
+    // Increase index and address
+    Index++;
+    Addr++;
+  }
 
-  // Write all chars
-  while (*Buffer)
-    EEPROM.write(Addr++, *Buffer++);
+  /* ----------------------------------------------------------------------------------------- */
+  
+  // Get WifiPsw
+  Addr = ADDR_WIFI_PSW;
+  Index = 0;
 
-  // Write carriage return
-  EEPROM.write(Addr, '\n');
-
-  // Apply changes in EEPROM
-  EEPROM.commit();
-}
-
-/* ------------------------------------------------------------------------------------------- */
-// Name:        EEPROMGetWifiPsw
-// Description: Gets the WiFi password from EEPROM
-// Arguments:   Buffer - Pointer to the buffer array (32 bytes)
-// Returns:     None
-/* ------------------------------------------------------------------------------------------- */
-
-void EEPROMGetWifiPsw (char *Buffer)
-{
-  unsigned char Index = 0;
-  unsigned int Addr = ADDR_WIFI_PSW;
-
-  // Read all chars until carriage return or 32 read bytes
+  // Read data until carriage return or 32 read bytes
   while ((EEPROM.read(Addr)) != '\n' && (Index < 32))
-    Buffer[Index++] = EEPROM.read(Addr++);
+  {
+    // Save data to buffer  
+    Buffer.WifiPsw[Index] = EEPROM.read(Addr);
+
+    // Add byte to checksum
+    Checksum += Buffer.WifiPsw[Index];
+
+    // Increase index and address
+    Index++;
+    Addr++;
+  }
+
+  /* ----------------------------------------------------------------------------------------- */
+  
+  // Get WifiHostURL
+  Addr = ADDR_WIFI_HOSTURL;
+  Index = 0;
+
+  // Read data until carriage return or 64 read bytes
+  while ((EEPROM.read(Addr)) != '\n' && (Index < 64))
+  {
+    // Save data to buffer  
+    Buffer.WifiHostURL[Index] = EEPROM.read(Addr);
+
+    // Add byte to checksum
+    Checksum += Buffer.WifiHostURL[Index];
+
+    // Increase index and address
+    Index++;
+    Addr++;
+  }
+
+  /* ----------------------------------------------------------------------------------------- */
+  
+  // Get WifiScriptID
+  Addr = ADDR_WIFI_SCRIPTID;
+  Index = 0;
+
+  // Read data until carriage return or 64 read bytes
+  while ((EEPROM.read(Addr)) != '\n' && (Index < 64))
+  {
+    // Save data to buffer  
+    Buffer.WifiScriptID[Index] = EEPROM.read(Addr);
+
+    // Add byte to checksum
+    Checksum += Buffer.WifiScriptID[Index];
+
+    // Increase index and address
+    Index++;
+    Addr++;
+  }  
+  
+  /* ----------------------------------------------------------------------------------------- */
+
+  // Read EEPROM checksum - 4 bytes
+  EEPROMChecksum += (EEPROM.read(ADDR_CHECKSUM) << 24);
+  EEPROMChecksum += (EEPROM.read(ADDR_CHECKSUM + 1) << 16);
+  EEPROMChecksum += (EEPROM.read(ADDR_CHECKSUM + 2) << 8);
+  EEPROMChecksum += EEPROM.read(ADDR_CHECKSUM + 3);
+
+  // Compare checksums
+  if (Checksum == EEPROMChecksum)
+    return true;
+  else
+    return false;
 }
 
 /* ------------------------------------------------------------------------------------------- */
-// Name:        EEPROMSetWifiPsw
-// Description: Writes the WiFi password in EEPROM
-// Arguments:   Buffer - Pointer to the array to be written (32 bytes)
+// Name:        setConfigEEPROM
+// Description: Sets all the configuration variables in EEPROM
+// Arguments:   Buffer - Pointer to the data struct
 // Returns:     None
 /* ------------------------------------------------------------------------------------------- */
 
-void EEPROMSetWifiPsw (const char *Buffer)
+void setConfigEEPROM (StructConfig &Buffer)
 {
-  unsigned int Addr = ADDR_WIFI_PSW;
+  // Buffer index position for char arrays
+  unsigned char Index = 0;
+  
+  // Address to be written
+  unsigned int Addr = 0;
+
+  // MSB and LSB buffers
+  unsigned char MSB = 0;
+  unsigned char LSB = 0;  
+    
+  // Checksum - Sum of all written bytes
+  unsigned long Checksum = 0;  
+
+  /* ----------------------------------------------------------------------------------------- */
+  
+  // Set LogFilename  
+  Addr = ADDR_LOG_FILENAME;
+  Index = 0;
 
   // Write all chars
-  while (*Buffer)
-    EEPROM.write(Addr++, *Buffer++);
+  for (Index = 0; Index < strlen(Buffer.LogFilename); Index++)
+  {
+    // Send byte
+    EEPROM.write(Addr, Buffer.LogFilename[Index]);
 
+    // Add byte to checksum
+    Checksum += Buffer.LogFilename[Index];
+    
+    // Increase address
+    Addr++;
+  }
+  
   // Write carriage return
   EEPROM.write(Addr, '\n');
 
-  // Apply changes in EEPROM
-  EEPROM.commit();
-}
+  /* ----------------------------------------------------------------------------------------- */
 
-/* ------------------------------------------------------------------------------------------- */
-// Name:        EEPROMGetTimezone
-// Description: Gets the Log timezone value from EEPROM
-// Arguments:   Timezone - Pointer to the buffer variable (int)
-// Returns:     None
-/* ------------------------------------------------------------------------------------------- */
-
-void EEPROMGetTimezone (int *Timezone)
-{
-  // Read upper and lower bytes of Timezone
-  *Timezone = (short)((EEPROM.read (ADDR_TIMEZONE)) << 8) | (EEPROM.read (ADDR_TIMEZONE + 1));
-}
-
-/* ------------------------------------------------------------------------------------------- */
-// Name:        EEPROMSetTimezone
-// Description: Writes the log timezone value in EEPROM
-// Arguments:   Timezone - Value to be written (int)
-// Returns:     None
-/* ------------------------------------------------------------------------------------------- */
-
-void EEPROMSetTimezone (int Timezone)
-{
-  // Contrain value
-  Timezone = constrain (Timezone, -12, 12);
-
-  // Write upper and lower bytes of Timezone
-  EEPROM.write (ADDR_TIMEZONE, Timezone >> 8);
-  EEPROM.write (ADDR_TIMEZONE + 1, Timezone & 0xFF);
-
-  // Apply changes in EEPROM
-  EEPROM.commit();
-}
-
-/* ------------------------------------------------------------------------------------------- */
-// Name:        EEPROMGetLogInterval
-// Description: Gets the Log sample interval value from EEPROM
-// Arguments:   Interval - Pointer to the buffer variable (unsigned short)
-// Returns:     None
-/* ------------------------------------------------------------------------------------------- */
-
-void EEPROMGetLogInterval (unsigned short *Interval)
-{
-  // Read upper and lower bytes of Interval
-  *Interval = ((EEPROM.read (ADDR_TIME_SAMPLE)) << 8) | (EEPROM.read (ADDR_TIME_SAMPLE + 1));
-}
-
-/* ------------------------------------------------------------------------------------------- */
-// Name:        EEPROMSetLogInterval
-// Description: Writes the Log sample interval value in EEPROM
-// Arguments:   Interval - Value to be written (unsigned short)
-// Returns:     None
-/* ------------------------------------------------------------------------------------------- */
-
-void EEPROMSetLogInterval (unsigned short Interval)
-{
-  // Contrain value
-  Interval = constrain (Interval, 0, 65535);
+  // Set LogInterval
+  MSB = Buffer.LogInterval >> 8;
+  LSB = Buffer.LogInterval & 0xFF;
 
   // Write upper and lower bytes of Interval
-  EEPROM.write (ADDR_TIME_SAMPLE, Interval >> 8);
-  EEPROM.write (ADDR_TIME_SAMPLE + 1, Interval & 0xFF);
+  EEPROM.write (ADDR_LOG_INTERVAL, MSB);
+  EEPROM.write (ADDR_LOG_INTERVAL + 1, LSB);
 
-  // Apply changes in EEPROM
-  EEPROM.commit();
-}
+  // Add bytes to checksum
+  Checksum += MSB;
+  Checksum += LSB;
 
-/* ------------------------------------------------------------------------------------------- */
-// Name:        EEPROMGetErrorInterval
-// Description: Gets the log error interval value from EEPROM
-// Arguments:   Interval - Pointer to the buffer variable (unsigned short)
-// Returns:     None
-/* ------------------------------------------------------------------------------------------- */
+  /* ----------------------------------------------------------------------------------------- */
 
-void EEPROMGetErrorInterval (unsigned short *Interval)
-{
-  // Read upper and lower bytes of Interval
-  *Interval = ((EEPROM.read (ADDR_TIME_ERROR)) << 8) | (EEPROM.read (ADDR_TIME_ERROR + 1));
-}
-
-/* ------------------------------------------------------------------------------------------- */
-// Name:        EEPROMSetErrorInterval
-// Description: Writes the log error interval value in EEPROM
-// Arguments:   Interval - Value to be written (unsigned int)
-// Returns:     None
-/* ------------------------------------------------------------------------------------------- */
-
-void EEPROMSetErrorInterval (unsigned int Interval)
-{
-  // Contrain value
-  Interval = constrain (Interval, 0, 65535);
+  // Set LogWaitTime
+  MSB = Buffer.LogWaitTime >> 8;
+  LSB = Buffer.LogWaitTime & 0xFF;
 
   // Write upper and lower bytes of Interval
-  EEPROM.write (ADDR_TIME_ERROR, Interval >> 8);
-  EEPROM.write (ADDR_TIME_ERROR + 1, Interval & 0xFF);
+  EEPROM.write (ADDR_LOG_WAIT_TIME, MSB);
+  EEPROM.write (ADDR_LOG_WAIT_TIME + 1, LSB);
 
+  // Add bytes to checksum
+  Checksum += MSB;
+  Checksum += LSB;
+
+  /* ----------------------------------------------------------------------------------------- */
+
+  // Set LogTimezone
+  MSB = Buffer.LogTimezone >> 8;
+  LSB = Buffer.LogTimezone & 0xFF;
+
+  // Write upper and lower bytes of Interval
+  EEPROM.write (ADDR_LOG_TIMEZONE, MSB);
+  EEPROM.write (ADDR_LOG_TIMEZONE + 1, LSB);
+
+  // Add bytes to checksum
+  Checksum += MSB;
+  Checksum += LSB;    
+
+  /* ----------------------------------------------------------------------------------------- */
+
+  // Set WifiEnabled
+  EEPROM.write (ADDR_WIFI_ENABLED, Buffer.WifiEnabled);
+
+  // Add byte to checksum
+  Checksum += Buffer.WifiEnabled; 
+
+  /* ----------------------------------------------------------------------------------------- */
+
+  // Set WifiSyncEnable
+  EEPROM.write (ADDR_WIFI_SYNC, Buffer.WifiSyncEnable);
+
+  // Add byte to checksum
+  Checksum += Buffer.WifiSyncEnable;   
+
+  /* ----------------------------------------------------------------------------------------- */
+  
+  // Set WifiSSID  
+  Addr = ADDR_WIFI_SSID;
+  Index = 0;
+
+  // Write all chars
+  for (Index = 0; Index < strlen(Buffer.WifiSSID); Index++)  
+  {
+    // Send byte
+    EEPROM.write(Addr, Buffer.WifiSSID[Index]);
+
+    // Add byte to checksum
+    Checksum += Buffer.WifiSSID[Index];
+    
+    // Increase address
+    Addr++;
+  }
+  
+  // Write carriage return
+  EEPROM.write(Addr, '\n');
+
+  /* ----------------------------------------------------------------------------------------- */
+  
+  // Set WifiPsw  
+  Addr = ADDR_WIFI_PSW;
+  Index = 0;
+
+  // Write all chars
+  for (Index = 0; Index < strlen(Buffer.WifiPsw); Index++) 
+  {
+    // Send byte
+    EEPROM.write(Addr, Buffer.WifiPsw[Index]);
+
+    // Add byte to checksum
+    Checksum += Buffer.WifiPsw[Index];
+    
+    // Increase address
+    Addr++;
+  }
+  
+  // Write carriage return
+  EEPROM.write(Addr, '\n'); 
+
+  /* ----------------------------------------------------------------------------------------- */
+  
+  // Set WifiHostURL  
+  Addr = ADDR_WIFI_HOSTURL;
+  Index = 0;
+
+  // Write all chars
+  for (Index = 0; Index < strlen(Buffer.WifiHostURL); Index++) 
+  {
+    // Send byte
+    EEPROM.write(Addr, Buffer.WifiHostURL[Index]);
+
+    // Add byte to checksum
+    Checksum += Buffer.WifiHostURL[Index];
+    
+    // Increase address
+    Addr++;
+  }
+  
+  // Write carriage return
+  EEPROM.write(Addr, '\n');
+
+  /* ----------------------------------------------------------------------------------------- */
+  
+  // Set WifiScriptID  
+  Addr = ADDR_WIFI_SCRIPTID;
+  Index = 0;
+
+  // Write all chars
+  for (Index = 0; Index < strlen(Buffer.WifiScriptID); Index++) 
+  {
+    // Send byte
+    EEPROM.write(Addr, Buffer.WifiScriptID[Index]);
+
+    // Add byte to checksum
+    Checksum += Buffer.WifiScriptID[Index];
+    
+    // Increase address
+    Addr++;
+  }
+  
+  // Write carriage return
+  EEPROM.write(Addr, '\n');        
+  
+  /* ----------------------------------------------------------------------------------------- */
+
+  // Write checksum - 4 bytes
+  EEPROM.write(ADDR_CHECKSUM, Checksum >> 24);
+  EEPROM.write((ADDR_CHECKSUM + 1), ((Checksum >> 16) & 0xFF));
+  EEPROM.write((ADDR_CHECKSUM + 2), ((Checksum >> 8) & 0xFF));
+  EEPROM.write((ADDR_CHECKSUM + 3), (Checksum & 0xFF));
+  
+  /* ----------------------------------------------------------------------------------------- */  
+  
   // Apply changes in EEPROM
   EEPROM.commit();
 }
@@ -1377,32 +1358,3 @@ void EEPROMSetErrorInterval (unsigned int Interval)
 /* ------------------------------------------------------------------------------------------- */
 // End of code
 /* ------------------------------------------------------------------------------------------- */
-
-/* ------------------------------------------------------------------------------------------- */
-// Name:        EEPROMGetRTCPending
-// Description: Gets the RTCPending flag value from EEPROM
-// Arguments:   None
-// Returns:     Flag value
-/* ------------------------------------------------------------------------------------------- */
-
-bool EEPROMGetRTCPending ()
-{
-  // Read upper and lower bytes of Interval
-  return EEPROM.read (ADDR_RTC_PENDING);
-}
-
-/* ------------------------------------------------------------------------------------------- */
-// Name:        EEPROMSetRTCPending
-// Description: Writes the RTCPending flag value in EEPROM
-// Arguments:   Flag value
-// Returns:     None
-/* ------------------------------------------------------------------------------------------- */
-
-void EEPROMSetRTCPending (bool Value)
-{
-  // Write upper and lower bytes of Interval
-  EEPROM.write (ADDR_RTC_PENDING, Value);
-
-  // Apply changes in EEPROM
-  EEPROM.commit();
-}
