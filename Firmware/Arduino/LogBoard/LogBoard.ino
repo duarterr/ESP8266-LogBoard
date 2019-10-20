@@ -568,7 +568,7 @@ void setup()
     #endif         
 
     // Enter deep sleep - Account for spent time
-    ESP.deepSleep(constrain((ERROR_SLEEP_INTERVAL*1e6 - millis()*1e3), 1, 3600e6));           
+    ESP.deepSleep(ERROR_SLEEP_INTERVAL*1e6 - micros());
   }
   
   /* ----------------------------------------------------------------------------------------- */
@@ -848,7 +848,7 @@ void setup()
   #endif
 
   // Enter deep sleep - Account for spent time running
-  ESP.deepSleep(constrain((Config.LogInterval*1e6 - millis()*1e3), 1, 3600e6));  
+  ESP.deepSleep(Config.LogInterval*1e6 - micros());  
 }
 
 /* ------------------------------------------------------------------------------------------- */
