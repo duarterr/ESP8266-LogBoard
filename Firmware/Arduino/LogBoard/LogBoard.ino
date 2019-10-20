@@ -81,8 +81,8 @@ const PROGMEM char* NTPServerURL = "0.br.pool.ntp.org";  // Brazilian server
 // Time to sleep if an error occur loading settings from EEPROM (seconds)
 #define ERROR_SLEEP_INTERVAL    60
 
-// WiFi connection timeout (seconds)
-#define WIFI_TIMEOUT            5
+// WiFi connection timeout (milliseconds)
+#define WIFI_TIMEOUT            5000
 
 // Battery voltage cutoff voltage (volts)
 #define VBAT_LOW                3
@@ -137,9 +137,11 @@ struct StructSample
 struct StructFlag
 {
   bool SDAvailable = false;           // SD is installed and accessible
-  bool WiFiAvailable = false;         // WiFi is connected
+  bool WifiAvailable = false;         // WiFi is connected
   bool NewFirmwareSuccess = false;    // New firmware was correctly loaded
   bool NewConfigSuccess = false;      // New congiguration was correctly loaded
+  bool PostSuccess = false;           // Sample was posted to Google Sheets
+  bool SDSuccess = false;             // Sample was saved in SD card
   bool PendingReboot = false;         // Reboot is pending
   bool PendingRTCUpdate = false;      // RTC update is pending
   bool PendingWifiSync = false;       // WiFi sync is pending
@@ -154,6 +156,9 @@ struct StructTime
 
 // Log buffer
 char Buffer[200] = {0};
+
+// HTTP post response code
+short PostResponseCode = 0;
 
 /* ------------------------------------------------------------------------------------------- */
 // Constructors
@@ -448,7 +453,8 @@ void setup()
       if (Flag.NewConfigSuccess)
       {                
         #if DEBUG_SERIAL
-        Serial.printf ("[%05d] Done. New config: \n", millis());
+        Serial.printf ("[%05d] Done. \n", millis());
+        Serial.printf ("[%05d] New configuration: \n", millis());
         Serial.printf ("[%05d] LogFilename: \'%s\' \n", millis(), NewConfig.LogFilename);
         Serial.printf ("[%05d] LogInterval: %d \n", millis(), NewConfig.LogInterval);
         Serial.printf ("[%05d] LogWaitTime: %d \n", millis(), NewConfig.LogWaitTime);       
@@ -538,7 +544,8 @@ void setup()
   if (getConfigEEPROM (Config))
   {
     #if DEBUG_SERIAL
-    Serial.printf ("[%05d] Done. Configuration: \n", millis());
+    Serial.printf ("[%05d] Done. \n", millis());
+    Serial.printf ("[%05d] Configuration: \n", millis());
     Serial.printf ("[%05d] LogFilename: \'%s\' \n", millis(), Config.LogFilename);
     Serial.printf ("[%05d] LogInterval: %d \n", millis(), Config.LogInterval);
     Serial.printf ("[%05d] LogWaitTime: %d \n", millis(), Config.LogWaitTime);       
@@ -560,10 +567,10 @@ void setup()
     Serial.printf ("[%05d] Trying again in %d seconds \n", millis(), ERROR_SLEEP_INTERVAL);  
     #endif         
 
-    // Enter deep sleep
-    ESP.deepSleep(ERROR_SLEEP_INTERVAL * 1e6);            
+    // Enter deep sleep - Account for spent time
+    ESP.deepSleep(constrain((ERROR_SLEEP_INTERVAL*1e6 - millis()*1e3), 1, 3600e6));           
   }
-
+  
   /* ----------------------------------------------------------------------------------------- */
   // Check if data logging is possible
   /* ----------------------------------------------------------------------------------------- */
@@ -581,24 +588,6 @@ void setup()
   }
 
   /* ----------------------------------------------------------------------------------------- */
-  // Start WiFi connection if necessary
-  /* ----------------------------------------------------------------------------------------- */  
-
-  // WiFi functions are enable
-  if (Config.WifiEnabled)
-  {
-    #if DEBUG_SERIAL
-    Serial.printf ("[%05d] Starting WiFi connection... \n", millis()); 
-    #endif
-
-    // Start WiFi connection
-    WiFi.begin (Config.WifiSSID, Config.WifiPsw);
-
-    // Get request time
-    Time.RequestWifi = millis ();
-  }
-
-  /* ----------------------------------------------------------------------------------------- */
   // Init DS1722 temperature sensor
   /* ----------------------------------------------------------------------------------------- */  
   
@@ -613,11 +602,15 @@ void setup()
   // Set DS1722 resolution
   TS.setResolution (12);
 
+  #if DEBUG_SERIAL
+  Serial.printf ("[%05d] Requesting temperature conversion... \n", millis());  
+  #endif
+  
   // Request a temperature conversion - Will be ready in 1.2s @ 12bits
   TS.requestConversion ();
 
   // Get request time
-  Time.RequestTS = millis ();  
+  Time.RequestTS = millis();  
 
   #if DEBUG_SERIAL
   Serial.printf ("[%05d] Done. \n", millis());  
@@ -631,9 +624,6 @@ void setup()
   Serial.printf ("[%05d] Configuring DS1390 RTC... \n", millis()); 
   Serial.printf ("[%05d] %s library v%s \n", millis(), DS1390_CODE_NAME, DS1390_CODE_VERSION); 
   #endif
-
-  // Delay for DS1390 boot (mandatory)
-  delay (200);  
 
   // Check if memory was lost recently
   Sample.RTCValid = RTC.getValidation ();  
@@ -669,9 +659,6 @@ void setup()
   // Sample data
   /* ----------------------------------------------------------------------------------------- */ 
 
-  // LED on
-  digitalWrite (PIN_LED, LOW);
-
   #if DEBUG_SERIAL
   Serial.printf ("[%05d] Sampling data... \n", millis());  
   #endif  
@@ -683,7 +670,9 @@ void setup()
   Sample.BatteryVoltage = analogRead(PIN_ADC) * ADC_GAIN;  
 
   // Wait if temperature sample is not finish
-  while ((millis () - Time.RequestTS) < 1200);
+  while ((millis() - Time.RequestTS) < 1200)
+    // Delay for a bit
+    delay (100);
 
   // Get DS172 temperature
   Sample.Temperature = TS.getTemperature();
@@ -694,9 +683,172 @@ void setup()
   Serial.printf ("[%05d] Vbat: %.4f V \n", millis(), Sample.BatteryVoltage);
   Serial.printf ("[%05d] Temperature: %.4f C \n", millis(), Sample.Temperature);    
   #endif  
+
+  /* ----------------------------------------------------------------------------------------- */
+  // Start WiFi connection if necessary
+  /* ----------------------------------------------------------------------------------------- */   
+
+  // WiFi functions are enable
+  if (Config.WifiEnabled)
+  {
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] Starting WiFi connection... \n", millis()); 
+    #endif
+
+    // Start WiFi connection
+    WiFi.begin (Config.WifiSSID, Config.WifiPsw);
+
+    // Get request time
+    Time.RequestWifi = millis();
+
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] Done. \n", millis());
+    Serial.printf ("[%05d] Waiting for WiFi to connect... \n", millis());
+    #endif
   
-  // LED off
-  digitalWrite (PIN_LED, HIGH);
+    // Wait for connection
+    while ((WiFi.status() != WL_CONNECTED))
+    {
+      // Timeout time exceded
+      if (((millis() - Time.RequestWifi) > WIFI_TIMEOUT))
+        // Exit while loop
+        break;
+
+      // Delay for a bit
+      delay (100);
+    }
+     
+    // Timeout time exceded
+    if (WiFi.status() != WL_CONNECTED)
+    {
+      #if DEBUG_SERIAL
+      Serial.printf ("[%05d] WiFi connection timed-out! \n", millis());
+      #endif
+
+      // Reset flags
+      Flag.WifiAvailable = false;      
+      Flag.PostSuccess = false;
+    }     
+
+    // WiFi connected
+    else
+    {
+      #if DEBUG_SERIAL
+      Serial.printf ("[%05d] WiFi connected. \n", millis());
+      #endif  
+
+      // Set flag
+      Flag.WifiAvailable = true; 
+    }
+  }
+
+  // WiFi functions are disabled
+  else
+  {
+    // Reset flags
+    Flag.WifiAvailable = false;
+    Flag.PostSuccess = false;
+  }
+
+  /* ----------------------------------------------------------------------------------------- */
+  // Post data to Google Sheets if enabled
+  /* ----------------------------------------------------------------------------------------- */   
+
+  // WiFi is connected
+  if (Flag.WifiAvailable)
+  {
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] Connecting to host... \n", millis());
+    #endif
+
+    // Start HTTP client connection to host
+    LogClient.begin (Config.WifiHostURL);
+
+    // Define request timeout
+    LogClient.setTimeout(WIFI_TIMEOUT);
+
+    // Define request content type - Required to perform posts
+    LogClient.addHeader("Content-Type", "application/x-www-form-urlencoded");
+
+    // Delay to establish connection
+    delay (100);
+
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] Done. \n", millis());
+    #endif
+
+    // Prepare log buffer
+    snprintf (Buffer, sizeof(Buffer), "id=%s&log=EP:%d-TZ:%d-VB:%.4f-TS:%.4f-ST:%d-SD:%d",
+              Config.WifiScriptID, Sample.RTCEpoch, Config.LogTimezone, Sample.BatteryVoltage, 
+              Sample.Temperature, Sample.RTCValid, Flag.SDAvailable);
+
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] Posting... \n", millis());
+    #endif
+
+    // Send post request to host and get response code
+    PostResponseCode = LogClient.POST(Buffer);
+
+    // Close client connection
+    LogClient.end();
+
+    // Post was successful
+    if (PostResponseCode != -1)
+    {
+      // Set flag
+      Flag.PostSuccess = true;
+
+      #if DEBUG_SERIAL
+      Serial.printf ("[%05d] Done. \n", millis());
+      #endif
+    }
+
+    // Post failed
+    else
+    {
+      // Reset flag
+      Flag.PostSuccess = false;
+
+      #if DEBUG_SERIAL
+      Serial.printf ("[%05d] Failed to post data! \n", millis());
+      #endif
+    }
+
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] Response code: %d \n", millis(), PostResponseCode);
+    #endif
+  }
+  
+  /* ----------------------------------------------------------------------------------------- */
+  // Save data to SD card if available
+  /* ----------------------------------------------------------------------------------------- */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /* ----------------------------------------------------------------------------------------- */
+
+  #if DEBUG_SERIAL
+  Serial.printf ("[%05d] Next update in %d seconds... \n", millis(), Config.LogInterval);
+  #endif
+
+  // Enter deep sleep - Account for spent time running
+  ESP.deepSleep(constrain((Config.LogInterval*1e6 - millis()*1e3), 1, 3600e6));  
 }
 
 /* ------------------------------------------------------------------------------------------- */
