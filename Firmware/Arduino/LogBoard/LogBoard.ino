@@ -62,10 +62,10 @@ using namespace sdfat;
 // Software default constants
 /* ------------------------------------------------------------------------------------------- */
 
-// Default configuration file
-const PROGMEM char* FilenameNewConfig = "NewConfig.txt";
+// Default settings filename
+const PROGMEM char* FilenameNewSettings = "NewSettings.txt";
 
-// Default firmware file
+// Default firmware filename
 const PROGMEM char* FilenameNewFirmware = "NewFirmware.bin";
 
 // NTP server - Result is given by server closest to you, so it's usually in your timezone
@@ -110,7 +110,7 @@ const PROGMEM char* NTPServerURL = "0.br.pool.ntp.org";  // Brazilian server
 /* ------------------------------------------------------------------------------------------- */
 
 // Configuration variables
-struct StructConfig
+struct StructSettings
 {
   char LogFilename[64] = {0};         // SD card log file       
   unsigned int LogInterval = 1;       // Time between samples (10 to 3600 seconds)
@@ -122,7 +122,7 @@ struct StructConfig
   char WifiPsw[32] = {0};             // WiFi password
   char WifiHostURL[64] = {0};         // URL of the HTTP->HTTPs redirect host
   char WifiScriptID[64] = {0};        // Google Script ID
-} Config, NewConfig;
+} Settings, NewSettings;
 
 // Sampled data
 struct StructSample
@@ -139,7 +139,7 @@ struct StructFlag
   bool SDAvailable = false;           // SD is installed and accessible
   bool WifiAvailable = false;         // WiFi is connected
   bool NewFirmwareSuccess = false;    // New firmware was correctly loaded
-  bool NewConfigSuccess = false;      // New congiguration was correctly loaded
+  bool NewSettingsSuccess = false;    // New congiguration was correctly loaded
   bool PostSuccess = false;           // Sample was posted to Google Sheets
   bool SDSuccess = false;             // Sample was saved in SD card
   bool PendingReboot = false;         // Reboot is pending
@@ -173,8 +173,8 @@ DS1390 RTC (PIN_RTC_CS);
 // SD card
 SdFat SDCard;
 
-// New configuration file
-File FileNewConfig;
+// New settings file
+File FileNewSettings;
 
 // New firmware file
 File FileNewFirmware;
@@ -414,76 +414,76 @@ void setup()
   }
 
   /* ----------------------------------------------------------------------------------------- */
-  // Config update
+  // Settings update
   /* ----------------------------------------------------------------------------------------- */  
 
   // SD card is was initialized
   if (Flag.SDAvailable)
   {
-     // Try to open new config file
-    FileNewConfig = SDCard.open (FilenameNewConfig, FILE_READ);   
+     // Try to open new settings file
+    FileNewSettings = SDCard.open (FilenameNewSettings, FILE_READ);   
 
-    // Config file was found and opened
-    if (FileNewConfig)
+    // Settings file was found and opened
+    if (FileNewSettings)
     {
       // LED on
       digitalWrite (PIN_LED, LOW);    
       
       #if DEBUG_SERIAL
-      Serial.printf ("[%05d] New configuration file detected. Updating... \n", millis());
+      Serial.printf ("[%05d] New settings detected. Updating... \n", millis());
       #endif  
 
       // Check if all parameters are correct in the file
-      Flag.NewConfigSuccess = getConfigSD (NewConfig);
+      Flag.NewSettingsSuccess = getSettingsSD (NewSettings);
       
-      // Close the config file
-      FileNewConfig.close();
+      // Close the settings file
+      FileNewSettings.close();
 
       // Parameters were correct
-      if (Flag.NewConfigSuccess)
+      if (Flag.NewSettingsSuccess)
       {
-        // Transfer NewConfig to EEPROM
-        setConfigEEPROM (NewConfig);
+        // Transfer NewSettings to EEPROM
+        setSettingsEEPROM (NewSettings);
       }
       
       // LED off
       digitalWrite (PIN_LED, HIGH);
       
       // Update was successful
-      if (Flag.NewConfigSuccess)
+      if (Flag.NewSettingsSuccess)
       {                
         #if DEBUG_SERIAL
         Serial.printf ("[%05d] Done. \n", millis());
-        Serial.printf ("[%05d] New configuration: \n", millis());
-        Serial.printf ("[%05d] LogFilename: \'%s\' \n", millis(), NewConfig.LogFilename);
-        Serial.printf ("[%05d] LogInterval: %d \n", millis(), NewConfig.LogInterval);
-        Serial.printf ("[%05d] LogWaitTime: %d \n", millis(), NewConfig.LogWaitTime);       
-        Serial.printf ("[%05d] LogTimezone: %d \n", millis(), NewConfig.LogTimezone);
-        Serial.printf ("[%05d] WifiEnabled: %d \n", millis(), NewConfig.WifiEnabled);
-        Serial.printf ("[%05d] WifiSyncEnable: %d \n", millis(), NewConfig.WifiSyncEnable);
-        Serial.printf ("[%05d] WifiSSID: \'%s\' \n", millis(), NewConfig.WifiSSID);
-        Serial.printf ("[%05d] WifiPsw: \'%s\' \n", millis(), NewConfig.WifiPsw);       
-        Serial.printf ("[%05d] WifiHostURL: \'%s\' \n", millis(), NewConfig.WifiHostURL);
-        Serial.printf ("[%05d] WifiScriptID: \'%s\' \n", millis(), NewConfig.WifiScriptID);
+        Serial.printf ("[%05d] New settings: \n", millis());
+        Serial.printf ("[%05d] LogFilename: \'%s\' \n", millis(), NewSettings.LogFilename);
+        Serial.printf ("[%05d] LogInterval: %d \n", millis(), NewSettings.LogInterval);
+        Serial.printf ("[%05d] LogWaitTime: %d \n", millis(), NewSettings.LogWaitTime);       
+        Serial.printf ("[%05d] LogTimezone: %d \n", millis(), NewSettings.LogTimezone);
+        Serial.printf ("[%05d] WifiEnabled: %d \n", millis(), NewSettings.WifiEnabled);
+        Serial.printf ("[%05d] WifiSyncEnable: %d \n", millis(), NewSettings.WifiSyncEnable);
+        Serial.printf ("[%05d] WifiSSID: \'%s\' \n", millis(), NewSettings.WifiSSID);
+        Serial.printf ("[%05d] WifiPsw: \'%s\' \n", millis(), NewSettings.WifiPsw);       
+        Serial.printf ("[%05d] WifiHostURL: \'%s\' \n", millis(), NewSettings.WifiHostURL);
+        Serial.printf ("[%05d] WifiScriptID: \'%s\' \n", millis(), NewSettings.WifiScriptID);
         #endif
                 
         #if DEBUG_SERIAL
-        Serial.printf ("[%05d] Removing configuration file... \n", millis());
+        Serial.printf ("[%05d] Removing settings file... \n", millis());
         #endif
         
-        // Remove configuration file
-        if (SDCard.remove(FilenameNewConfig))
+        // Remove settings file
+        if (SDCard.remove(FilenameNewSettings))
         {
           #if DEBUG_SERIAL
           Serial.printf ("[%05d] Done. \n", millis());  
           #endif             
         }
 
-        // Error removing configuration file
+        // Error removing settings file
         else
         {
           #if DEBUG_SERIAL
-          Serial.printf ("[%05d] Error removing configuration file! \n", millis());
+          Serial.printf ("[%05d] Error removing settings file! \n", millis());
           #endif          
         }
 
@@ -495,11 +495,11 @@ void setup()
         Flag.PendingReboot = true;
       }
 
-      // Error updating config
+      // Error updating settings
       else
       {
         #if DEBUG_SERIAL
-        Serial.printf ("[%05d] Error updating configuration! \n", millis());
+        Serial.printf ("[%05d] Error updating settings! \n", millis());
         #endif
 
         // Jump to loop
@@ -507,17 +507,17 @@ void setup()
       }                              
     }
     
-    // Config file not found or failed to open
+    // Settings file not found or failed to open
     else
     {
       #if DEBUG_SERIAL
-      Serial.printf ("[%05d] New configuration file not detected. \n", millis());
+      Serial.printf ("[%05d] New settings not detected. \n", millis());
       #endif
     }    
   }
 
   /* ----------------------------------------------------------------------------------------- */
-  // Reboot if new firmware or config was applied
+  // Reboot if new firmware or settings was applied
   /* ----------------------------------------------------------------------------------------- */  
 
   if (Flag.PendingReboot)
@@ -533,37 +533,37 @@ void setup()
   }
 
   /* ----------------------------------------------------------------------------------------- */
-  // Get configuration from EEPROM
+  // Get settings from EEPROM
   /* ----------------------------------------------------------------------------------------- */   
 
   #if DEBUG_SERIAL
-  Serial.printf ("[%05d] Loading configuration from EEPROM... \n", millis());
+  Serial.printf ("[%05d] Loading settings from EEPROM... \n", millis());
   #endif
   
   // Configuration was correctly loaded from EEPROM
-  if (getConfigEEPROM (Config))
+  if (getSettingsEEPROM (Settings))
   {
     #if DEBUG_SERIAL
     Serial.printf ("[%05d] Done. \n", millis());
     Serial.printf ("[%05d] Configuration: \n", millis());
-    Serial.printf ("[%05d] LogFilename: \'%s\' \n", millis(), Config.LogFilename);
-    Serial.printf ("[%05d] LogInterval: %d \n", millis(), Config.LogInterval);
-    Serial.printf ("[%05d] LogWaitTime: %d \n", millis(), Config.LogWaitTime);       
-    Serial.printf ("[%05d] LogTimezone: %d \n", millis(), Config.LogTimezone);
-    Serial.printf ("[%05d] WifiEnabled: %d \n", millis(), Config.WifiEnabled);
-    Serial.printf ("[%05d] WifiSyncEnable: %d \n", millis(), Config.WifiSyncEnable);
-    Serial.printf ("[%05d] WifiSSID: \'%s\' \n", millis(), Config.WifiSSID);
-    Serial.printf ("[%05d] WifiPsw: \'%s\' \n", millis(), Config.WifiPsw);       
-    Serial.printf ("[%05d] WifiHostURL: \'%s\' \n", millis(), Config.WifiHostURL);
-    Serial.printf ("[%05d] WifiScriptID: \'%s\' \n", millis(), Config.WifiScriptID);
+    Serial.printf ("[%05d] LogFilename: \'%s\' \n", millis(), Settings.LogFilename);
+    Serial.printf ("[%05d] LogInterval: %d \n", millis(), Settings.LogInterval);
+    Serial.printf ("[%05d] LogWaitTime: %d \n", millis(), Settings.LogWaitTime);       
+    Serial.printf ("[%05d] LogTimezone: %d \n", millis(), Settings.LogTimezone);
+    Serial.printf ("[%05d] WifiEnabled: %d \n", millis(), Settings.WifiEnabled);
+    Serial.printf ("[%05d] WifiSyncEnable: %d \n", millis(), Settings.WifiSyncEnable);
+    Serial.printf ("[%05d] WifiSSID: \'%s\' \n", millis(), Settings.WifiSSID);
+    Serial.printf ("[%05d] WifiPsw: \'%s\' \n", millis(), Settings.WifiPsw);       
+    Serial.printf ("[%05d] WifiHostURL: \'%s\' \n", millis(), Settings.WifiHostURL);
+    Serial.printf ("[%05d] WifiScriptID: \'%s\' \n", millis(), Settings.WifiScriptID);
     #endif  
   }
 
-  // An error occur loading configuration from EEPROM
+  // An error occur loading settings from EEPROM
   else
   {
     #if DEBUG_SERIAL
-    Serial.printf ("[%05d] Error getting configuration from EEPROM! \n", millis());  
+    Serial.printf ("[%05d] Error getting settings from EEPROM! \n", millis());  
     Serial.printf ("[%05d] Trying again in %d seconds \n", millis(), ERROR_SLEEP_INTERVAL);  
     #endif         
 
@@ -576,7 +576,7 @@ void setup()
   /* ----------------------------------------------------------------------------------------- */
 
   // SD card is not availabe and WiFi is disabled
-  if (!Flag.SDAvailable && !Config.WifiEnabled)
+  if (!Flag.SDAvailable && !Settings.WifiEnabled)
   {
     #if DEBUG_SERIAL
     Serial.printf ("[%05d] Imposible to save data! No SD card or WiFi are available! \n", millis());  
@@ -636,7 +636,7 @@ void setup()
     setRTCPending (Flag.PendingRTCUpdate);   
 
     #if DEBUG_SERIAL
-    Serial.printf ("[%05d] RTC memory content was recently lost! Timestamp is unreliable! \n", millis());
+    Serial.printf ("[%05d] RTC memory content was recently lost! Timestamp may be wrong! \n", millis());
     #endif
   }
 
@@ -664,7 +664,7 @@ void setup()
   #endif  
 
   // Get current time
-  Sample.RTCEpoch = RTC.getDateTimeEpoch (Config.LogTimezone);
+  Sample.RTCEpoch = RTC.getDateTimeEpoch (Settings.LogTimezone);
 
   // Get battery voltage
   Sample.BatteryVoltage = analogRead(PIN_ADC) * ADC_GAIN;  
@@ -689,14 +689,14 @@ void setup()
   /* ----------------------------------------------------------------------------------------- */   
 
   // WiFi functions are enable
-  if (Config.WifiEnabled)
+  if (Settings.WifiEnabled)
   {
     #if DEBUG_SERIAL
     Serial.printf ("[%05d] Starting WiFi connection... \n", millis()); 
     #endif
 
     // Start WiFi connection
-    WiFi.begin (Config.WifiSSID, Config.WifiPsw);
+    WiFi.begin (Settings.WifiSSID, Settings.WifiPsw);
 
     // Get request time
     Time.RequestWifi = millis();
@@ -762,7 +762,7 @@ void setup()
     #endif
 
     // Start HTTP client connection to host
-    LogClient.begin (Config.WifiHostURL);
+    LogClient.begin (Settings.WifiHostURL);
 
     // Define request timeout
     LogClient.setTimeout(WIFI_TIMEOUT);
@@ -779,7 +779,7 @@ void setup()
 
     // Prepare log buffer
     snprintf (Buffer, sizeof(Buffer), "id=%s&log=EP:%d-TZ:%d-VB:%.4f-TS:%.4f-ST:%d-SD:%d",
-              Config.WifiScriptID, Sample.RTCEpoch, Config.LogTimezone, Sample.BatteryVoltage, 
+              Settings.WifiScriptID, Sample.RTCEpoch, Settings.LogTimezone, Sample.BatteryVoltage, 
               Sample.Temperature, Sample.RTCValid, Flag.SDAvailable);
 
     #if DEBUG_SERIAL
@@ -844,11 +844,11 @@ void setup()
   /* ----------------------------------------------------------------------------------------- */
 
   #if DEBUG_SERIAL
-  Serial.printf ("[%05d] Next update in %d seconds... \n", millis(), Config.LogInterval);
+  Serial.printf ("[%05d] Next update in %d seconds... \n", millis(), Settings.LogInterval);
   #endif
 
   // Enter deep sleep - Account for spent time running
-  ESP.deepSleep(Config.LogInterval*1e6 - micros());  
+  ESP.deepSleep(Settings.LogInterval*1e6 - micros());  
 }
 
 /* ------------------------------------------------------------------------------------------- */
@@ -911,13 +911,13 @@ void setRTCPending (bool Value)
 
 
 /* ------------------------------------------------------------------------------------------- */
-// Name:        getConfigSD
-// Description: Gets all the configuration variables from SD card (FilenameNewConfig)
+// Name:        getSettingsSD
+// Description: Gets all the settings from SD card (FilenameNewSettings)
 // Arguments:   Buffer - Pointer to the buffer struct
 // Returns:     true if all parameters were parsed and false otherwise
 /* ------------------------------------------------------------------------------------------- */
 
-bool getConfigSD (StructConfig &Buffer)
+bool getSettingsSD (StructSettings &Buffer)
 {
   // Line buffer
   char BufferLine[100];
@@ -926,10 +926,10 @@ bool getConfigSD (StructConfig &Buffer)
   unsigned char EOLPos = 0;
 
   // Checksum - 10 parameters are expected. Set 1 bit of Checksum for each
-  unsigned int NewConfigChecksum = 0;
+  unsigned int NewSettingsChecksum = 0;
 
-  // At this point, FileNewConfig is already open. Read all lines of file sequentially
-  while ((EOLPos = FileNewConfig.fgets(BufferLine, sizeof(BufferLine))) > 0)
+  // At this point, FileNewSettings is already open. Read all lines of file sequentially
+  while ((EOLPos = FileNewSettings.fgets(BufferLine, sizeof(BufferLine))) > 0)
   {
     // Proccess only lines that contain variables
     if (BufferLine[0] == '$')
@@ -940,11 +940,11 @@ bool getConfigSD (StructConfig &Buffer)
         // Start index to extract text
         unsigned char StartPos = 13;
 
-        // Copy value to new config buffer from StartPos to '\n'
+        // Copy value to new settings buffer from StartPos to '\n'
         strncpy (Buffer.LogFilename, (BufferLine + StartPos), (EOLPos - StartPos - 1));
 
         // Increment checksum
-        NewConfigChecksum += 0x001;
+        NewSettingsChecksum += 0x001;
       }
 
       // Current line is $LogInterval
@@ -964,7 +964,7 @@ bool getConfigSD (StructConfig &Buffer)
 
         // Increment checksum if value is whithin limits
         if ((Buffer.LogInterval >= 10) && (Buffer.LogInterval <= 3600))
-          NewConfigChecksum += 0x002;        
+          NewSettingsChecksum += 0x002;        
       }
 
       // Current line is $LogWaitTime
@@ -984,7 +984,7 @@ bool getConfigSD (StructConfig &Buffer)
 
         // // Increment checksum if value is whithin limits
         if ((Buffer.LogWaitTime >= 1) && (Buffer.LogWaitTime <= 3600))          
-          NewConfigChecksum += 0x004;        
+          NewSettingsChecksum += 0x004;        
       }
 
       // Current line is $LogTimezone
@@ -1004,7 +1004,7 @@ bool getConfigSD (StructConfig &Buffer)
 
         // Increment checksum if value is whithin limits
         if ((Buffer.LogTimezone >= -12) && (Buffer.LogTimezone <= 12))
-          NewConfigChecksum += 0x008;          
+          NewSettingsChecksum += 0x008;          
       }
 
       // Current line is $WifiEnabled
@@ -1024,7 +1024,7 @@ bool getConfigSD (StructConfig &Buffer)
 
         // Increment checksum if value is whithin limits
         if ((Buffer.WifiEnabled == 0) || (Buffer.WifiEnabled == 1))
-          NewConfigChecksum += 0x010;          
+          NewSettingsChecksum += 0x010;          
       }
 
       // Current line is $WifiSyncEnable
@@ -1044,7 +1044,7 @@ bool getConfigSD (StructConfig &Buffer)
 
         // Increment checksum if value is whithin limits
         if ((Buffer.WifiSyncEnable == 0) || (Buffer.WifiSyncEnable == 1))
-          NewConfigChecksum += 0x020;          
+          NewSettingsChecksum += 0x020;          
       }
 
       // Current line is $WifiSSID
@@ -1057,7 +1057,7 @@ bool getConfigSD (StructConfig &Buffer)
         strncpy (Buffer.WifiSSID, (BufferLine + StartPos), (EOLPos - StartPos - 1));
 
         // Increment checksum
-        NewConfigChecksum += 0x040;        
+        NewSettingsChecksum += 0x040;        
       }
 
       // Current line is $WifiPsw
@@ -1070,7 +1070,7 @@ bool getConfigSD (StructConfig &Buffer)
         strncpy (Buffer.WifiPsw, (BufferLine + StartPos), (EOLPos - StartPos - 1));
 
         // Increment checksum
-        NewConfigChecksum += 0x080;        
+        NewSettingsChecksum += 0x080;        
       }
 
       // Current line is $WifiHostURL
@@ -1083,7 +1083,7 @@ bool getConfigSD (StructConfig &Buffer)
         strncpy (Buffer.WifiHostURL, (BufferLine + StartPos), (EOLPos - StartPos - 1));
 
         // Increment checksum
-        NewConfigChecksum += 0x100;           
+        NewSettingsChecksum += 0x100;           
       }
 
       // Current line is $WifiScriptID
@@ -1096,26 +1096,26 @@ bool getConfigSD (StructConfig &Buffer)
         strncpy (Buffer.WifiScriptID, (BufferLine + StartPos), (EOLPos - StartPos - 1));
 
         // Increment checksum
-        NewConfigChecksum += 0x200;          
+        NewSettingsChecksum += 0x200;          
       }
     }
   }
 
   // Return true if all parameters were parsed
-  if (NewConfigChecksum == 0x3FF)
+  if (NewSettingsChecksum == 0x3FF)
     return true;
   else
     return false;
 }
 
 /* ------------------------------------------------------------------------------------------- */
-// Name:        getConfigEEPROM
-// Description: Gets all the configuration variables from EEPROM
+// Name:        getSettingsEEPROM
+// Description: Gets all the settings from EEPROM
 // Arguments:   Buffer - Pointer to the buffer struct
 // Returns:     true if all parameters were parsed and false otherwise
 /* ------------------------------------------------------------------------------------------- */
 
-bool getConfigEEPROM (StructConfig &Buffer)
+bool getSettingsEEPROM (StructSettings &Buffer)
 {
   // Buffer index position for char arrays
   unsigned char Index = 0;
@@ -1304,13 +1304,13 @@ bool getConfigEEPROM (StructConfig &Buffer)
 }
 
 /* ------------------------------------------------------------------------------------------- */
-// Name:        setConfigEEPROM
-// Description: Sets all the configuration variables in EEPROM
+// Name:        setSettingsEEPROM
+// Description: Sets all the settings in EEPROM
 // Arguments:   Buffer - Pointer to the data struct
 // Returns:     None
 /* ------------------------------------------------------------------------------------------- */
 
-void setConfigEEPROM (StructConfig &Buffer)
+void setSettingsEEPROM (StructSettings &Buffer)
 {
   // Buffer index position for char arrays
   unsigned char Index = 0;
