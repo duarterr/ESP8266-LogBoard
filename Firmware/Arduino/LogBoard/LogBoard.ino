@@ -140,8 +140,8 @@ struct StructFlag
   bool WifiAvailable = false;         // WiFi is connected
   bool NewFirmwareSuccess = false;    // New firmware was correctly loaded
   bool NewSettingsSuccess = false;    // New congiguration was correctly loaded
-  bool PostSuccess = false;           // Sample was posted to Google Sheets
-  bool SDSuccess = false;             // Sample was saved in SD card
+  bool SaveWifiSuccess = false;       // Sample was posted to Google Sheets
+  bool SaveSDSuccess = false;         // Sample was saved in SD card
   bool PendingReboot = false;         // Reboot is pending
   bool PendingRTCUpdate = false;      // RTC update is pending
   bool PendingWifiSync = false;       // WiFi sync is pending
@@ -297,8 +297,9 @@ void setup()
   // SD card was not detected
   else
   {
-    // Clear flag
-    Flag.SDAvailable = false;     
+    // Clear flags
+    Flag.SDAvailable = false;
+    Flag.SaveSDSuccess = false;
     
     #if DEBUG_SERIAL
     Serial.printf ("[%05d] SD card not detected! \n", millis());
@@ -568,7 +569,8 @@ void setup()
     #endif         
 
     // Enter deep sleep - Account for spent time
-    ESP.deepSleep(ERROR_SLEEP_INTERVAL*1e6 - micros());
+    //ESP.deepSleep(ERROR_SLEEP_INTERVAL*1e6 - micros(), WAKE_RF_DEFAULT);
+    ESP.deepSleep(ERROR_SLEEP_INTERVAL*1e6, WAKE_RF_DEFAULT);
   }
   
   /* ----------------------------------------------------------------------------------------- */
@@ -727,7 +729,7 @@ void setup()
 
       // Reset flags
       Flag.WifiAvailable = false;      
-      Flag.PostSuccess = false;
+      Flag.SaveWifiSuccess = false;   
     }     
 
     // WiFi connected
@@ -747,7 +749,7 @@ void setup()
   {
     // Reset flags
     Flag.WifiAvailable = false;
-    Flag.PostSuccess = false;
+    Flag.SaveWifiSuccess = false;
   }
 
   /* ----------------------------------------------------------------------------------------- */
@@ -793,10 +795,10 @@ void setup()
     LogClient.end();
 
     // Post was successful
-    if (PostResponseCode != -1)
+    if (PostResponseCode == 200)
     {
       // Set flag
-      Flag.PostSuccess = true;
+      Flag.SaveWifiSuccess = true;
 
       #if DEBUG_SERIAL
       Serial.printf ("[%05d] Done. \n", millis());
@@ -807,7 +809,7 @@ void setup()
     else
     {
       // Reset flag
-      Flag.PostSuccess = false;
+      Flag.SaveWifiSuccess = false;
 
       #if DEBUG_SERIAL
       Serial.printf ("[%05d] Failed to post data! \n", millis());
@@ -823,32 +825,215 @@ void setup()
   // Save data to SD card if available
   /* ----------------------------------------------------------------------------------------- */
 
+  // SD card is available  
+  if (Flag.SDAvailable)
+  {
+    // Open the log file
+    FileLog = SDCard.open(Settings.LogFilename, FILE_WRITE);
 
+    // If the file opened okay, write to it
+    if (FileLog)
+    {
+      #if DEBUG_SERIAL
+      Serial.printf ("[%05d] Saving to Log file... \n", millis());
+      #endif
 
+      // File is empty
+      if(FileLog.size() == 0)
+        // Write header
+        FileLog.println ("EP; TZ; VB; TS; ST; WF");              
+      
+      // Prepare log buffer
+      snprintf (Buffer, sizeof(Buffer), "%d; %d; %.4f; %.4f; %d; %d",
+                Sample.RTCEpoch, Settings.LogTimezone, Sample.BatteryVoltage, 
+                Sample.Temperature, Sample.RTCValid, Flag.SaveWifiSuccess); 
 
+      // Write to file
+      FileLog.println(Buffer);
 
+      // Close the file
+      FileLog.close();
 
+      // Set flag
+      Flag.SaveSDSuccess = true;
 
+      #if DEBUG_SERIAL
+      Serial.printf ("[%05d] Done. \n", millis());
+      #endif
+    }
 
+    // Error opening the file
+    else
+    {
+      // Reset the flag
+      Flag.SaveSDSuccess = false;       
 
-
-
-
-
-
-
-
-
+      #if DEBUG_SERIAL
+      Serial.printf ("[%05d] Error opening the Log file! \n", millis());
+      #endif
+    }
+  }
 
 
   /* ----------------------------------------------------------------------------------------- */
+  // Check if the SD card content will need to be synced
+  /* ----------------------------------------------------------------------------------------- */
 
-  #if DEBUG_SERIAL
-  Serial.printf ("[%05d] Next update in %d seconds... \n", millis(), Settings.LogInterval);
-  #endif
+  // WiFi functions and Sync are enabled
+  if (Settings.WifiEnabled && Settings.WifiSyncEnable)
+  {
+    // Data was saved only in the SD card
+    if (Flag.SaveSDSuccess && !Flag.SaveWifiSuccess)
+    {
+      // Set PendingWifiSync flag to sync SD content - Saved in EEPROM in case update fails in this run
+      Flag.PendingWifiSync = true;
+      setSyncPending (Flag.PendingWifiSync);             
+    }
+  }
 
-  // Enter deep sleep - Account for spent time running
-  ESP.deepSleep(Settings.LogInterval*1e6 - micros());  
+  // WiFi functions or Sync are disable
+  else
+  {
+    // Clear PendingWifiSync flag
+    Flag.PendingWifiSync = false;
+    setSyncPending (Flag.PendingWifiSync);      
+  }
+
+  /* ----------------------------------------------------------------------------------------- */
+  // Update RTC if necessary
+  /* ----------------------------------------------------------------------------------------- */
+
+  // Get flag from EEPROM
+  Flag.PendingRTCUpdate = getRTCPending ();
+
+  // RTC data need to be updated
+  if (Flag.PendingRTCUpdate)
+  {
+    // WiFi is connected
+    if (Flag.WifiAvailable)
+    {
+      #if DEBUG_SERIAL
+      Serial.printf ("[%05d] RTC time update is pending. Updating... \n", millis());
+      #endif
+
+      // Start NTP client
+      NTP.begin();
+
+      // NTP data was successfuly updated
+      if (NTP.update())
+      {
+        // Update DS1390 time using NTP Epoch timestamp
+        RTC.setDateTimeEpoch (NTP.getEpochTime(), Settings.LogTimezone);
+
+        // Clear update pending flag
+        Flag.PendingRTCUpdate = false;
+        setRTCPending (Flag.PendingRTCUpdate);
+
+        #if DEBUG_SERIAL
+        Serial.printf ("[%05d] Done. \n", millis());
+        #endif
+      }
+
+      // Error getting NTP data
+      else
+      {
+        #if DEBUG_SERIAL
+        Serial.printf ("[%05d] Error getting data from NTC server! \n", millis());
+        #endif
+      }
+    }
+
+    // WiFi is not connected
+    else
+    {
+      #if DEBUG_SERIAL
+      Serial.printf ("[%05d] RTC time update is pending but WiFi is not available! \n", millis());
+      #endif
+    }
+  }
+
+  /* ----------------------------------------------------------------------------------------- */
+  // Sync SD card content if necessary
+  /* ----------------------------------------------------------------------------------------- */
+
+  // Get flag from EEPROM
+  Flag.PendingWifiSync = getSyncPending ();
+
+  // SD card data needs to be synced
+  if (Flag.PendingWifiSync)
+  {
+    // WiFi is connected and SD is available
+    if (Flag.WifiAvailable && Flag.SDAvailable)
+    {
+      #if DEBUG_SERIAL
+      Serial.printf ("[%05d] SD card sync is pending. Syncing... \n", millis());
+      #endif      
+
+      // Clear PendingWifiSync flag
+      Flag.PendingWifiSync = false;
+      setSyncPending (Flag.PendingWifiSync);       
+
+      #if DEBUG_SERIAL
+      Serial.printf ("[%05d] Done. \n", millis());
+      #endif  
+    }
+
+    // WiFi is not connected or SD is not available
+    else
+    {
+      // WiFi is not connected and SD is available
+      if (!Flag.WifiAvailable && Flag.SDAvailable)
+      {    
+        #if DEBUG_SERIAL
+        Serial.printf ("[%05d] SD card data needs to be synced but WiFi is not available! \n", millis());
+        #endif
+      }
+
+      // WiFi is connected but SD is not available
+      else if (Flag.WifiAvailable && !Flag.SDAvailable)
+      {    
+        #if DEBUG_SERIAL
+        Serial.printf ("[%05d] SD card data needs to be synced but SD card is not available! \n", millis());
+        #endif
+      }
+
+      // Nothing is availabe
+      else
+      {
+         #if DEBUG_SERIAL
+        Serial.printf ("[%05d] Impossible to sync data! \n", millis());
+        #endif       
+      }
+    }
+  }
+
+  /* ----------------------------------------------------------------------------------------- */
+  // Check if data was saved somewhere
+  /* ----------------------------------------------------------------------------------------- */
+
+  // Data was not saved
+  if (!Flag.SaveWifiSuccess && !Flag.SaveSDSuccess)
+  {
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] Data was not saved! Trying again in %d seconds... \n", millis(), Settings.LogWaitTime);
+    #endif
+
+    // Enter deep sleep - Account for spent time running
+    //ESP.deepSleep(Settings.LogWaitTime*1e6 - micros(), WAKE_RF_DEFAULT);  
+    ESP.deepSleep(Settings.LogWaitTime*1e6, WAKE_RF_DEFAULT);  
+  }
+
+  // Data was saved in SD card or WiFi
+  else
+  {
+    #if DEBUG_SERIAL
+    Serial.printf ("[%05d] Finished. Next update in %d seconds... \n", millis(), Settings.LogInterval);
+    #endif
+  
+    // Enter deep sleep - Account for spent time running
+    //ESP.deepSleep(Settings.LogInterval*1e6 - micros(), WAKE_RF_DEFAULT);  
+    ESP.deepSleep(Settings.LogInterval*1e6, WAKE_RF_DEFAULT);  
+  }
 }
 
 /* ------------------------------------------------------------------------------------------- */
@@ -876,7 +1061,7 @@ void loop ()
     Serial.printf ("[%05d] Low battery! Shuting down... \n", millis());
     #endif     
 
-    ESP.deepSleep(0);
+    ESP.deepSleep(0, WAKE_RF_DEFAULT);
   }
 }
 
@@ -889,7 +1074,7 @@ void loop ()
 
 bool getRTCPending ()
 {
-  // Read upper and lower bytes of Interval
+  // Read byte and return
   return EEPROM.read (ADDR_RTC_PENDING);
 }
 
@@ -902,13 +1087,41 @@ bool getRTCPending ()
 
 void setRTCPending (bool Value)
 {
-  // Write upper and lower bytes of Interval
+  // Write value
   EEPROM.write (ADDR_RTC_PENDING, Value);
 
   // Apply changes in EEPROM
   EEPROM.commit();
 }
 
+/* ------------------------------------------------------------------------------------------- */
+// Name:        getSyncPending
+// Description: Gets the WifiSyncPending flag value from EEPROM
+// Arguments:   None
+// Returns:     Flag value
+/* ------------------------------------------------------------------------------------------- */
+
+bool getSyncPending ()
+{
+  // Read byte and return
+  return EEPROM.read (ADDR_SYNC_PENDING);
+}
+
+/* ------------------------------------------------------------------------------------------- */
+// Name:        setSyncPending
+// Description: Writes the WifiSyncPending flag value in EEPROM
+// Arguments:   Flag value
+// Returns:     None
+/* ------------------------------------------------------------------------------------------- */
+
+void setSyncPending (bool Value)
+{
+  // Write value
+  EEPROM.write (ADDR_SYNC_PENDING, Value);
+
+  // Apply changes in EEPROM
+  EEPROM.commit();
+}
 
 /* ------------------------------------------------------------------------------------------- */
 // Name:        getSettingsSD
