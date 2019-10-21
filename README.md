@@ -2,7 +2,9 @@
 
 A development platform for the ESP8266 with data logger capabilities. Fully compatible with the Arduino IDE.
 
-![v1](https://raw.githubusercontent.com/duarterr/ESP8266-LogBoard/master/Extras/v1_500.png)
+<p align="center">
+<img src="https://raw.githubusercontent.com/duarterr/ESP8266-LogBoard/master/Extras/v1.png" width="500" height="393" alt="ESP8266 LogBoard">
+</p>
 
 Author: Renan R. Duarte - <duarte.renan@hotmail.com>
 
