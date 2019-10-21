@@ -764,61 +764,67 @@ void setup()
     #endif
 
     // Start HTTP client connection to host
-    LogClient.begin (Settings.WifiHostURL);
-
-    // Define request timeout
-    LogClient.setTimeout(WIFI_TIMEOUT);
-
-    // Define request content type - Required to perform posts
-    LogClient.addHeader("Content-Type", "application/x-www-form-urlencoded");
-
-    // Delay to establish connection
-    delay (100);
-
-    #if DEBUG_SERIAL
-    Serial.printf ("[%05d] Done. \n", millis());
-    #endif
-
-    // Prepare log buffer
-    snprintf (Buffer, sizeof(Buffer), "id=%s&log=EP:%d-TZ:%d-VB:%.4f-TS:%.4f-ST:%d-SD:%d",
-              Settings.WifiScriptID, Sample.RTCEpoch, Settings.LogTimezone, Sample.BatteryVoltage, 
-              Sample.Temperature, Sample.RTCValid, Flag.SDAvailable);
-
-    #if DEBUG_SERIAL
-    Serial.printf ("[%05d] Posting... \n", millis());
-    #endif
-
-    // Send post request to host and get response code
-    PostResponseCode = LogClient.POST(Buffer);
-
-    // Close client connection
-    LogClient.end();
-
-    // Post was successful
-    if (PostResponseCode == 200)
+    if (LogClient.begin (Settings.WifiHostURL))
     {
-      // Set flag
-      Flag.SaveWifiSuccess = true;
-
+      // Define request timeout
+      LogClient.setTimeout(WIFI_TIMEOUT);
+  
+      // Define request content type - Required to perform posts
+      LogClient.addHeader("Content-Type", "application/x-www-form-urlencoded");
+  
       #if DEBUG_SERIAL
       Serial.printf ("[%05d] Done. \n", millis());
       #endif
-    }
-
-    // Post failed
-    else
-    {
-      // Reset flag
-      Flag.SaveWifiSuccess = false;
-
+  
+      // Prepare log buffer
+      snprintf (Buffer, sizeof(Buffer), "id=%s&log=%d;%d;%.4f;%.4f;%d;%d",
+                Settings.WifiScriptID, Sample.RTCEpoch, Settings.LogTimezone, Sample.BatteryVoltage, 
+                Sample.Temperature, Sample.RTCValid, Flag.SDAvailable);
+  
       #if DEBUG_SERIAL
-      Serial.printf ("[%05d] Failed to post data! \n", millis());
+      Serial.printf ("[%05d] Posting... \n", millis());
+      #endif
+  
+      // Send post request to host and get response code
+      PostResponseCode = LogClient.POST(Buffer);
+  
+      // Close client connection
+      LogClient.end();
+  
+      // Post was successful
+      if (PostResponseCode == 200)
+      {
+        // Set flag
+        Flag.SaveWifiSuccess = true;
+  
+        #if DEBUG_SERIAL
+        Serial.printf ("[%05d] Done. \n", millis());
+        #endif
+      }
+  
+      // Post failed
+      else
+      {
+        // Reset flag
+        Flag.SaveWifiSuccess = false;
+  
+        #if DEBUG_SERIAL
+        Serial.printf ("[%05d] Failed to post data! \n", millis());
+        #endif
+      }
+  
+      #if DEBUG_SERIAL
+      Serial.printf ("[%05d] Response code: %d \n", millis(), PostResponseCode);
       #endif
     }
 
-    #if DEBUG_SERIAL
-    Serial.printf ("[%05d] Response code: %d \n", millis(), PostResponseCode);
-    #endif
+    // Failed to  connect to host
+    else
+    {
+      #if DEBUG_SERIAL
+      Serial.printf ("[%05d] Failed to connect to host! \n", millis());
+      #endif      
+    }
   }
   
   /* ----------------------------------------------------------------------------------------- */
@@ -841,10 +847,10 @@ void setup()
       // File is empty
       if(FileLog.size() == 0)
         // Write header
-        FileLog.println ("EP; TZ; VB; TS; ST; WF");              
+        FileLog.println ("EP;TZ;VB;TS;ST;WF");              
       
       // Prepare log buffer
-      snprintf (Buffer, sizeof(Buffer), "%d; %d; %.4f; %.4f; %d; %d",
+      snprintf (Buffer, sizeof(Buffer), "%d;%d;%.4f;%.4f;%d;%d",
                 Sample.RTCEpoch, Settings.LogTimezone, Sample.BatteryVoltage, 
                 Sample.Temperature, Sample.RTCValid, Flag.SaveWifiSuccess); 
 
@@ -873,7 +879,6 @@ void setup()
       #endif
     }
   }
-
 
   /* ----------------------------------------------------------------------------------------- */
   // Check if the SD card content will need to be synced
@@ -958,7 +963,7 @@ void setup()
 
   // Get flag from EEPROM
   Flag.PendingWifiSync = getSyncPending ();
-
+Flag.PendingWifiSync = true;
   // SD card data needs to be synced
   if (Flag.PendingWifiSync)
   {
@@ -969,13 +974,25 @@ void setup()
       Serial.printf ("[%05d] SD card sync is pending. Syncing... \n", millis());
       #endif      
 
-      // Clear PendingWifiSync flag
-      Flag.PendingWifiSync = false;
-      setSyncPending (Flag.PendingWifiSync);       
+      // Sync was successful
+      if (syncLog())
+      {
+//        // Clear PendingWifiSync flag
+//        Flag.PendingWifiSync = false;
+//        setSyncPending (Flag.PendingWifiSync);       
+  
+        #if DEBUG_SERIAL
+        Serial.printf ("[%05d] Done. \n", millis());
+        #endif          
+      } 
 
-      #if DEBUG_SERIAL
-      Serial.printf ("[%05d] Done. \n", millis());
-      #endif  
+      // Sync failed
+      else
+      {
+        #if DEBUG_SERIAL
+        Serial.printf ("[%05d] Error syncing data! \n", millis());
+        #endif             
+      }
     }
 
     // WiFi is not connected or SD is not available
@@ -1723,3 +1740,87 @@ void setSettingsEEPROM (StructSettings &Buffer)
 /* ------------------------------------------------------------------------------------------- */
 // End of code
 /* ------------------------------------------------------------------------------------------- */
+
+bool syncLog ()
+{
+  // Line buffer
+  char BufferLine[100];
+  
+  // End of line index position
+  unsigned char EOLPos = 0;
+    
+  // At this point SD card and WiFi are available
+  
+  // Open the log file
+  FileLog = SDCard.open(Settings.LogFilename, FILE_READ | FILE_READ);
+
+  // File opened
+  if (FileLog)
+  {
+    // Read all lines of file sequentially
+    while ((EOLPos = FileLog.fgets(BufferLine, sizeof(BufferLine))) > 0)
+    {
+      // Proccess only lines with data that failed to be posted
+      if (BufferLine[EOLPos - 2] == '0')
+      {      
+        // Modify read line - Remove '\n' and change SaveWifiSuccess flag
+        snprintf (BufferLine, (EOLPos - 1), "%s", BufferLine); 
+        // TODO: salvar junto o ultimo valor
+                                 
+        // Start HTTP client connection to host
+        if (LogClient.begin (Settings.WifiHostURL))
+        {
+          // Define request timeout
+          LogClient.setTimeout(WIFI_TIMEOUT);
+          
+          // Define request content type - Required to perform posts
+          LogClient.addHeader("Content-Type", "application/x-www-form-urlencoded");       
+  
+          // Prepare post buffer
+          snprintf (Buffer, sizeof(Buffer), "id=%s&log=%s",
+                    Settings.WifiScriptID, BufferLine);     
+                                                            
+          // Send post request to host and get response code
+          PostResponseCode = LogClient.POST(Buffer);
+          
+          // Close client connection
+          LogClient.end();
+          
+          // Post failed
+          if (PostResponseCode != 200)
+          {
+            // Close file
+            FileLog.close ();
+  
+            // Return
+            return false;
+          }
+  
+          // Post was successful
+          else
+          {
+            // Replace line in file
+          }
+        }
+
+        // Not connected with host
+        else
+        {
+          return false;
+        }
+      }
+    }
+
+    // Close file
+    FileLog.close ();
+          
+    // At this point all data has been synced
+    return true;
+  }
+  
+  // Error opening the file
+  else
+  {
+    return false;
+  }
+}
