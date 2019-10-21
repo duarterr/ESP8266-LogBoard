@@ -1768,7 +1768,7 @@ bool syncLog ()
   // At this point SD card and WiFi are available
   
   // Open the log file
-  FileLog = SDCard.open(Settings.LogFilename, FILE_READ | FILE_READ);
+  FileLog = SDCard.open(Settings.LogFilename, O_READ | O_WRITE);
 
   // File opened
   if (FileLog)
@@ -1778,7 +1778,7 @@ bool syncLog ()
     {
       // Proccess only lines with data that failed to be posted
       if (BufferLine[EOLPos - 2] == '0')
-      {      
+      {             
         // Modify read line - Remove '\n' and change SaveWifiSuccess flag
         BufferLine[EOLPos - 1] = '\0';
         BufferLine[EOLPos - 2] = '1';
@@ -1815,7 +1815,17 @@ bool syncLog ()
           // Post was successful
           else
           {
-            // Replace line in file
+            // Get pointer position in file
+            unsigned long PointerPos = FileLog.curPosition ();
+    
+            // Return position pointer to WiFiSyncSuccess (last two bytes are \r \n, so return 3)
+            FileLog.seekCur (-3);
+            
+            // Change WiFiSyncSuccess value
+            FileLog.println("1");
+
+            // Return pointer to original position
+            FileLog.seekSet (PointerPos);
           }
         }
 
