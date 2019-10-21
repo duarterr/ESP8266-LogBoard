@@ -494,6 +494,22 @@ void setup()
 
         // Set reboot pending flag
         Flag.PendingReboot = true;
+
+        // WiFi functions and Sync are enabled
+        if (NewSettings.WifiEnabled && NewSettings.WifiSyncEnable)
+        {
+          // Set PendingWifiSync flag to sync SD content
+          Flag.PendingWifiSync = true;
+          setSyncPending (Flag.PendingWifiSync);             
+        }
+
+        // WiFi functions or Sync are disabled
+        else
+        {
+          // Clear PendingWifiSync flag
+          Flag.PendingWifiSync = false;
+          setSyncPending (Flag.PendingWifiSync);                  
+        }
       }
 
       // Error updating settings
@@ -963,7 +979,7 @@ void setup()
 
   // Get flag from EEPROM
   Flag.PendingWifiSync = getSyncPending ();
-Flag.PendingWifiSync = true;
+  
   // SD card data needs to be synced
   if (Flag.PendingWifiSync)
   {
@@ -977,9 +993,9 @@ Flag.PendingWifiSync = true;
       // Sync was successful
       if (syncLog())
       {
-//        // Clear PendingWifiSync flag
-//        Flag.PendingWifiSync = false;
-//        setSyncPending (Flag.PendingWifiSync);       
+        // Clear PendingWifiSync flag
+        Flag.PendingWifiSync = false;
+        setSyncPending (Flag.PendingWifiSync);       
   
         #if DEBUG_SERIAL
         Serial.printf ("[%05d] Done. \n", millis());
@@ -1764,8 +1780,8 @@ bool syncLog ()
       if (BufferLine[EOLPos - 2] == '0')
       {      
         // Modify read line - Remove '\n' and change SaveWifiSuccess flag
-        snprintf (BufferLine, (EOLPos - 1), "%s", BufferLine); 
-        // TODO: salvar junto o ultimo valor
+        BufferLine[EOLPos - 1] = '\0';
+        BufferLine[EOLPos - 2] = '1';
                                  
         // Start HTTP client connection to host
         if (LogClient.begin (Settings.WifiHostURL))
