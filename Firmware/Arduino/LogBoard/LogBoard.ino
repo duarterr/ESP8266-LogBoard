@@ -11,6 +11,9 @@
 //          As a solution, this code sends an HTTP request to a server where a HTTPs redirect
 //          is performed using cURL.
 //
+//          TODO: If log file is large, sync may take a lot of time. Must find a way to keep
+//          track of where to start the sync.
+//
 // Released into the public domain
 /* ------------------------------------------------------------------------------------------- */
 
@@ -845,7 +848,8 @@ void setup()
       }
   
       #if DEBUG_SERIAL
-      Serial.printf ("[%05d] Response code: %d \n", millis(), PostResponseCode);
+      Serial.printf ("[%05d] HTTP code: %d \n", millis(), PostResponseCode);
+      Serial.printf ("[%05d] Response: %s \n", millis(), PostResponseString);
       #endif
     }
 
@@ -1181,7 +1185,7 @@ void setSyncPending (bool Value)
 bool getSettingsSD (StructSettings &Buffer)
 {
   // Line buffer
-  char BufferLine[100];
+  char BufferLine[128];
 
   // End of line index position
   unsigned char EOLPos = 0;
