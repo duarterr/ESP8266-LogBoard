@@ -11,7 +11,7 @@ This is the main firmware of the LogBoard.
 This code gets the logged data via HTTP post and saves it to a Google Sheets document
 
 ## Google Script/HTTPsRedirect.php
-This code receives the ESP8266 HTTP post requests and redirects the requests to Google Script via HTTPS. The URL of this script is the HostURL in the Arduino code.
+This code receives the ESP8266 HTTP post requests and redirects the requests to via HTTPS. The URL of this script is the WifiRedirectURL in the Arduino code.
 
 ## Firmware Flowchart
 

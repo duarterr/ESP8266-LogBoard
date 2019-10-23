@@ -3,46 +3,53 @@
 // ------------------------------------------------------------------------------------------------------ //
 
 // Logger spreadsheet ID
-var Logger_Spreadsheet = SpreadsheetApp.openById('YOUR GSHEETS ID');
+var LoggerSpreadsheet = SpreadsheetApp.openById('YOUR GOOGLE SHEET ID');
 
 // Log sheet
-var Log_Raw_Sheet = Logger_Spreadsheet.getSheetByName("Sheet name to append data");
+var LogRawSheet = LoggerSpreadsheet.getSheetByName("Log - Raw");
 
 // ------------------------------------------------------------------------------------------------------ //
-// Spreadsheet related functions
+// POST request
 // ------------------------------------------------------------------------------------------------------ //
 
-// Post request - To save data into Log_Raw_Sheet
+// Post request - To save data into LogRawSheet
 function doPost(e)
 {  
-  // Get parameter "value" from script Url
-  var Value = e.parameter.value;
+  // Get parameter "payload" from script Url
+  var Payload = e.parameter.payload;
   
   // Get timestamp
-  var Time_Stamp = new Date();
+  var Timestamp = new Date();
     
-  // No value passed as argument to script Url.
-  if (e.parameter.value === undefined)
+  // No "payload" passed as argument to script Url.
+  if (Payload === undefined)
     return ContentService.createTextOutput("0");
   
   // Get last edited row from Current_Sheet sheet
-  var Current_Row = Log_Raw_Sheet.getLastRow() + 1;
+  var CurrentRow = LogRawSheet.getLastRow() + 1;
   
   // Write event index
-  Log_Raw_Sheet.getRange("A" + Current_Row).setValue(Current_Row - 2);
+  LogRawSheet.getRange("A" + CurrentRow).setValue(CurrentRow - 2);
   
   // Write TimeStamp
-  Log_Raw_Sheet.getRange("B" + Current_Row).setValue(Time_Stamp);
+  LogRawSheet.getRange("B" + CurrentRow).setValue(Timestamp);
   
-  // Write value
-  var Range = Log_Raw_Sheet.getRange("C" + Current_Row);
-  var Cell_Value = Range.setValue(Value).getValue();    
-    
+  // Write Payload
+  var Range = LogRawSheet.getRange("C" + CurrentRow);
+  var CellValue = Range.setValue(Payload).getValue();    
+  
+  Logger.log(Payload);
+  Logger.log(CellValue);
+  
   // Success
-  if (Cell_Value == e.parameter.value)
+  if (CellValue == Payload)
     return ContentService.createTextOutput("1");
 
   // Fail
   else
-    return ContentService.createTextOutput("2");
+    return ContentService.createTextOutput("0");
 }
+
+// ------------------------------------------------------------------------------------------------------ //
+// End of code.
+// ------------------------------------------------------------------------------------------------------ //

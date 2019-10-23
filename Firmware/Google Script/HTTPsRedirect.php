@@ -2,40 +2,33 @@
 
 // Check for empty post
 if (empty($_POST))
-	exit("Error - Post is empty");	
+	exit("-1");	
 
-// Get ID argument by POST
-if (isset($_POST['id']) )
-	$ScriptID = $_POST['id'];
+// Check if 'host' parameter was received
+if (isset($_POST['host']) )
+	$NewHost = $_POST['host'];
 else
-	exit("Error - ID not found");	
+	exit("-1");	
 
-// Get VALUE argument by POST
-if (isset($_POST['log']) )
-	$Value = $_POST['log'];
-else
-	exit("Error - Log value not found");	
-
-// Get timestamp
-$TimeStamp = date("j-M-Y H:i:s");
-
-// Create cURL post URL
-$Url = 'https://script.google.com/macros/s/' . $ScriptID . '/exec?value=' . $Value;
-
-// Create cURL instance
+// Create cURL instance	
 $curl = curl_init();
-curl_setopt($curl, CURLOPT_URL, $Url);
+
+// Post request will be redirected to $NewHost
+curl_setopt($curl, CURLOPT_URL, $NewHost);
+
+// Original POST content will be forwarded
+curl_setopt($curl, CURLOPT_POSTFIELDS, http_build_query($_POST));
+
+// Other cURL options
+curl_setopt($curl, CURLOPT_POST, 1);
+curl_setopt($curl, CURLOPT_HTTPHEADER, array ("application/x-www-form-urlencoded"));
 curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, false);
 curl_setopt($curl, CURLOPT_RETURNTRANSFER, false);
+curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
 
 // Send the request & save response to $Response
-$Response = curl_exec($curl);
+curl_exec($curl);
 
 // Close request to clear up some resources
 curl_close($curl);
-
-// Append data to log.txt
-//$myfile = fopen("log.txt", "a") or die ("Unable to open file!");
-//fwrite($myfile, $TimeStamp .";". $Value .";". $Response ."\r\n");
-//fclose($myfile);
 ?>

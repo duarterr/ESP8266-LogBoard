@@ -96,14 +96,14 @@ const PROGMEM char* NTPServerURL = "0.br.pool.ntp.org";  // Brazilian server
 #define ADDR_WIFI_SYNC          0x047 // 1 byte
 #define ADDR_WIFI_SSID          0x048 // 32 bytes (31c + '\n')
 #define ADDR_WIFI_PSW           0x068 // 32 bytes (31c + '\n')
-#define ADDR_WIFI_HOSTURL       0x088 // 64 bytes (63c + '\n')
-#define ADDR_WIFI_SCRIPTID      0x0C8 // 64 bytes (63c + '\n')
-#define ADDR_CHECKSUM           0x108 // 4 bytes
-#define ADDR_RTC_PENDING        0x10C // 1 byte
-#define ADDR_SYNC_PENDING       0x10D // 1 byte
+#define ADDR_WIFI_REDIRECTURL   0x088 // 64 bytes (63c + '\n')
+#define ADDR_WIFI_GSCRIPTURL    0x0C8 // 128 bytes (127c + '\n')
+#define ADDR_CHECKSUM           0x148 // 4 bytes
+#define ADDR_RTC_PENDING        0x14C // 1 byte
+#define ADDR_SYNC_PENDING       0x14D // 1 byte
 
 // EEPROM total bytes
-#define EEPROM_SIZE             0x10E // 270 bytes
+#define EEPROM_SIZE             0x14E // 334 bytes
 
 /* ------------------------------------------------------------------------------------------- */
 // Global variables
@@ -120,8 +120,8 @@ struct StructSettings
   unsigned char WifiSyncEnable = 0;   // Sync data stored in SD card to Google Sheets
   char WifiSSID[32] = {0};            // WiFi SSID
   char WifiPsw[32] = {0};             // WiFi password
-  char WifiHostURL[64] = {0};         // URL of the HTTP->HTTPs redirect host
-  char WifiScriptID[64] = {0};        // Google Script ID
+  char WifiRedirectURL[64] = {0};     // URL of the HTTP->HTTPs redirect host
+  char WifiGScriptURL[128] = {0};     // Google Script ID
 } Settings, NewSettings;
 
 // Sampled data
@@ -159,6 +159,9 @@ char Buffer[200] = {0};
 
 // HTTP post response code
 short PostResponseCode = 0;
+
+// HTTP post response - Expected only "-1", "0" or "1"
+char PostResponseString[2] = {0};
 
 /* ------------------------------------------------------------------------------------------- */
 // Constructors
@@ -234,12 +237,20 @@ void setup()
   // Check Vbat
   /* ----------------------------------------------------------------------------------------- */  
 
+  #if DEBUG_SERIAL
+  Serial.printf ("[%05d] Checking battery voltage... \n", millis());
+  #endif
+  
    // Get battery voltage
   Sample.BatteryVoltage = analogRead(PIN_ADC) * ADC_GAIN; 
 
   // Jump to loop if battery voltage is too low
   if (Sample.BatteryVoltage < VBAT_LOW)
     return;
+
+  #if DEBUG_SERIAL
+  Serial.printf ("[%05d] Done. \n", millis());  
+  #endif     
   
   /* ----------------------------------------------------------------------------------------- */
   // Init EEPROM
@@ -464,8 +475,8 @@ void setup()
         Serial.printf ("[%05d] WifiSyncEnable: %d \n", millis(), NewSettings.WifiSyncEnable);
         Serial.printf ("[%05d] WifiSSID: \'%s\' \n", millis(), NewSettings.WifiSSID);
         Serial.printf ("[%05d] WifiPsw: \'%s\' \n", millis(), NewSettings.WifiPsw);       
-        Serial.printf ("[%05d] WifiHostURL: \'%s\' \n", millis(), NewSettings.WifiHostURL);
-        Serial.printf ("[%05d] WifiScriptID: \'%s\' \n", millis(), NewSettings.WifiScriptID);
+        Serial.printf ("[%05d] WifiRedirectURL: \'%s\' \n", millis(), NewSettings.WifiRedirectURL);
+        Serial.printf ("[%05d] WifiGScriptURL: \'%s\' \n", millis(), NewSettings.WifiGScriptURL);
         #endif
                 
         #if DEBUG_SERIAL
@@ -571,8 +582,8 @@ void setup()
     Serial.printf ("[%05d] WifiSyncEnable: %d \n", millis(), Settings.WifiSyncEnable);
     Serial.printf ("[%05d] WifiSSID: \'%s\' \n", millis(), Settings.WifiSSID);
     Serial.printf ("[%05d] WifiPsw: \'%s\' \n", millis(), Settings.WifiPsw);       
-    Serial.printf ("[%05d] WifiHostURL: \'%s\' \n", millis(), Settings.WifiHostURL);
-    Serial.printf ("[%05d] WifiScriptID: \'%s\' \n", millis(), Settings.WifiScriptID);
+    Serial.printf ("[%05d] WifiRedirectURL: \'%s\' \n", millis(), Settings.WifiRedirectURL);
+    Serial.printf ("[%05d] WifiGScriptURL: \'%s\' \n", millis(), Settings.WifiGScriptURL);
     #endif  
   }
 
@@ -780,7 +791,7 @@ void setup()
     #endif
 
     // Start HTTP client connection to host
-    if (LogClient.begin (Settings.WifiHostURL))
+    if (LogClient.begin (Settings.WifiRedirectURL))
     {
       // Define request timeout
       LogClient.setTimeout(WIFI_TIMEOUT);
@@ -793,8 +804,8 @@ void setup()
       #endif
   
       // Prepare log buffer
-      snprintf (Buffer, sizeof(Buffer), "id=%s&log=%d;%d;%.4f;%.4f;%d;%d",
-                Settings.WifiScriptID, Sample.RTCEpoch, Settings.LogTimezone, Sample.BatteryVoltage, 
+      snprintf (Buffer, sizeof(Buffer), "host=%s&payload=%d;%d;%.4f;%.4f;%d;%d",
+                Settings.WifiGScriptURL, Sample.RTCEpoch, Settings.LogTimezone, Sample.BatteryVoltage, 
                 Sample.Temperature, Sample.RTCValid, Flag.SDAvailable);
   
       #if DEBUG_SERIAL
@@ -803,12 +814,16 @@ void setup()
   
       // Send post request to host and get response code
       PostResponseCode = LogClient.POST(Buffer);
+
+      // Get response
+      String Response = LogClient.getString();
+      Response.toCharArray(PostResponseString, 2);
   
       // Close client connection
       LogClient.end();
   
       // Post was successful
-      if (PostResponseCode == 200)
+      if ((PostResponseCode == 200) && (PostResponseString[0] == '1'))
       {
         // Set flag
         Flag.SaveWifiSuccess = true;
@@ -1319,27 +1334,27 @@ bool getSettingsSD (StructSettings &Buffer)
         NewSettingsChecksum += 0x080;        
       }
 
-      // Current line is $WifiHostURL
-      else if (strstr (BufferLine, "$WifiHostURL "))
+      // Current line is $WifiRedirectURL
+      else if (strstr (BufferLine, "$WifiRedirectURL "))
       {
         // Start index to extract text
-        unsigned char StartPos = 13;
+        unsigned char StartPos = 17;
 
         // Copy value to buffer from StartPos to '\n'
-        strncpy (Buffer.WifiHostURL, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+        strncpy (Buffer.WifiRedirectURL, (BufferLine + StartPos), (EOLPos - StartPos - 1));
 
         // Increment checksum
         NewSettingsChecksum += 0x100;           
       }
 
-      // Current line is $WifiScriptID
-      else if (strstr (BufferLine, "$WifiScriptID "))
+      // Current line is $WifiGScriptURL
+      else if (strstr (BufferLine, "$WifiGScriptURL "))
       {
         // Start index to extract text
-        unsigned char StartPos = 14;
+        unsigned char StartPos = 16;
 
         // Copy value to buffer from StartPos to '\n'
-        strncpy (Buffer.WifiScriptID, (BufferLine + StartPos), (EOLPos - StartPos - 1));
+        strncpy (Buffer.WifiGScriptURL, (BufferLine + StartPos), (EOLPos - StartPos - 1));
 
         // Increment checksum
         NewSettingsChecksum += 0x200;          
@@ -1496,18 +1511,18 @@ bool getSettingsEEPROM (StructSettings &Buffer)
 
   /* ----------------------------------------------------------------------------------------- */
   
-  // Get WifiHostURL
-  Addr = ADDR_WIFI_HOSTURL;
+  // Get WifiRedirectURL
+  Addr = ADDR_WIFI_REDIRECTURL;
   Index = 0;
 
   // Read data until carriage return or 64 read bytes
   while ((EEPROM.read(Addr)) != '\n' && (Index < 64))
   {
     // Save data to buffer  
-    Buffer.WifiHostURL[Index] = EEPROM.read(Addr);
+    Buffer.WifiRedirectURL[Index] = EEPROM.read(Addr);
 
     // Add byte to checksum
-    Checksum += Buffer.WifiHostURL[Index];
+    Checksum += Buffer.WifiRedirectURL[Index];
 
     // Increase index and address
     Index++;
@@ -1516,18 +1531,18 @@ bool getSettingsEEPROM (StructSettings &Buffer)
 
   /* ----------------------------------------------------------------------------------------- */
   
-  // Get WifiScriptID
-  Addr = ADDR_WIFI_SCRIPTID;
+  // Get WifiGScriptURL
+  Addr = ADDR_WIFI_GSCRIPTURL;
   Index = 0;
 
-  // Read data until carriage return or 64 read bytes
-  while ((EEPROM.read(Addr)) != '\n' && (Index < 64))
+  // Read data until carriage return or 128 read bytes
+  while ((EEPROM.read(Addr)) != '\n' && (Index < 128))
   {
     // Save data to buffer  
-    Buffer.WifiScriptID[Index] = EEPROM.read(Addr);
+    Buffer.WifiGScriptURL[Index] = EEPROM.read(Addr);
 
     // Add byte to checksum
-    Checksum += Buffer.WifiScriptID[Index];
+    Checksum += Buffer.WifiGScriptURL[Index];
 
     // Increase index and address
     Index++;
@@ -1697,18 +1712,18 @@ void setSettingsEEPROM (StructSettings &Buffer)
 
   /* ----------------------------------------------------------------------------------------- */
   
-  // Set WifiHostURL  
-  Addr = ADDR_WIFI_HOSTURL;
+  // Set WifiRedirectURL  
+  Addr = ADDR_WIFI_REDIRECTURL;
   Index = 0;
 
   // Write all chars
-  for (Index = 0; Index < strlen(Buffer.WifiHostURL); Index++) 
+  for (Index = 0; Index < strlen(Buffer.WifiRedirectURL); Index++) 
   {
     // Send byte
-    EEPROM.write(Addr, Buffer.WifiHostURL[Index]);
+    EEPROM.write(Addr, Buffer.WifiRedirectURL[Index]);
 
     // Add byte to checksum
-    Checksum += Buffer.WifiHostURL[Index];
+    Checksum += Buffer.WifiRedirectURL[Index];
     
     // Increase address
     Addr++;
@@ -1719,18 +1734,18 @@ void setSettingsEEPROM (StructSettings &Buffer)
 
   /* ----------------------------------------------------------------------------------------- */
   
-  // Set WifiScriptID  
-  Addr = ADDR_WIFI_SCRIPTID;
+  // Set WifiGScriptURL  
+  Addr = ADDR_WIFI_GSCRIPTURL;
   Index = 0;
 
   // Write all chars
-  for (Index = 0; Index < strlen(Buffer.WifiScriptID); Index++) 
+  for (Index = 0; Index < strlen(Buffer.WifiGScriptURL); Index++) 
   {
     // Send byte
-    EEPROM.write(Addr, Buffer.WifiScriptID[Index]);
+    EEPROM.write(Addr, Buffer.WifiGScriptURL[Index]);
 
     // Add byte to checksum
-    Checksum += Buffer.WifiScriptID[Index];
+    Checksum += Buffer.WifiGScriptURL[Index];
     
     // Increase address
     Addr++;
@@ -1784,7 +1799,7 @@ bool syncLog ()
         BufferLine[EOLPos - 2] = '1';
                                  
         // Start HTTP client connection to host
-        if (LogClient.begin (Settings.WifiHostURL))
+        if (LogClient.begin (Settings.WifiRedirectURL))
         {
           // Define request timeout
           LogClient.setTimeout(WIFI_TIMEOUT);
@@ -1793,17 +1808,18 @@ bool syncLog ()
           LogClient.addHeader("Content-Type", "application/x-www-form-urlencoded");       
   
           // Prepare post buffer
-          snprintf (Buffer, sizeof(Buffer), "id=%s&log=%s",
-                    Settings.WifiScriptID, BufferLine);     
+          snprintf (Buffer, sizeof(Buffer), "host=%s&payload=%s",
+                    Settings.WifiGScriptURL, BufferLine);     
                                                             
           // Send post request to host and get response code
           PostResponseCode = LogClient.POST(Buffer);
-          
-          // Close client connection
-          LogClient.end();
-          
+
+          // Get response
+          String Response = LogClient.getString();
+          Response.toCharArray(PostResponseString, 2);
+   
           // Post failed
-          if (PostResponseCode != 200)
+          if ((PostResponseCode != 200) || (PostResponseString[0] != '1'))
           {
             // Close file
             FileLog.close ();

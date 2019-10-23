@@ -14,8 +14,8 @@ Parameters description:
 - WifiSyncEnable: Sync SD card data to Google Sheets if sample failed to be posted online (0 = disable, 1 = enable)
 - WifiSSID: WiFi SSID (max 31 characters)
 - WifiPsw: WiFi password (max 31 characters)
-- WifiHostURL: URL of the HTTPS -> HTTP redirect host (max 63 characters)
-- WifiScriptID: Google script ID (max 63 characters)
+- WifiRedirectURL: URL of the HTTPS -> HTTP redirect host (max 63 characters)
+- WifiGScriptURL: Google script web app URL (max 127 characters)
 
 Edit only the values after the variable name. Do not modify any other part of this file!
 Values are separated from variable names by a space. 
@@ -29,8 +29,8 @@ $WifiEnabled 1
 $WifiSyncEnable 1
 $WifiSSID Your WiFi SSID
 $WifiPsw Your WiFi Password
-$WifiHostURL http://urlofredirecthost.com/
-$WifiScriptID YourGoogleScriptID
+$WifiRedirectURL http://urlofredirecthost.com/
+$WifiGScriptURL https://script.google.com/macros/s/YourGScriptID/exec
 
 ---------------------------------------------------------------------------------------------------------------------
 End of file.
