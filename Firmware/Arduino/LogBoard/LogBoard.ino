@@ -1,9 +1,9 @@
 /* ------------------------------------------------------------------------------------------- */
 // LogBoard - Data logger firwmare for the ESP8266 LogBoard
-// Version: 1.1
+// Version: 1.2
 // Author:  Renan R. Duarte
 // E-mail:  duarte.renan@hotmail.com
-// Date:    October 18, 2019
+// Date:    February 18, 2020
 //
 // Notes:   Sending data to Google Sheets (via Google Script) could be done directly using the
 //          WiFiClientSecure library. However, HTTPS requests require more heap memory than
@@ -11,8 +11,10 @@
 //          As a solution, this code sends an HTTP request to a server where a HTTPs redirect
 //          is performed using cURL.
 //
-//          TODO: If log file is large, sync may take a lot of time. Must find a way to keep
+// TODO: 	If log file is large, sync may take a lot of time. Must find a way to keep
 //          track of where to start the sync.
+//			  Include "device name" in config to use multiple devices with one online sheet
+//			
 //
 // Released into the public domain
 /* ------------------------------------------------------------------------------------------- */
@@ -46,6 +48,10 @@
 #include <SdFat.h>
 using namespace sdfat;
 
+// BME280 related functions
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME280.h>
+
 /* ------------------------------------------------------------------------------------------- */
 // Hardware defines
 /* ------------------------------------------------------------------------------------------- */
@@ -55,6 +61,7 @@ using namespace sdfat;
 #define PIN_SD_CD               4
 #define PIN_RTC_CS              10
 #define PIN_TS_CS               5
+#define PIN_BME_CS              15
 #define PIN_LED                 2
 #define PIN_ADC                 A0
 
@@ -134,6 +141,10 @@ struct StructSample
   float BatteryVoltage = 0;           // ADC voltage
   unsigned long RTCEpoch = 0;         // RTC date and time - Epoch format
   bool RTCValid = false;              // RTC memory was not lost. Data is reliable
+  bool BmeStatus = false;             // BME280 status
+  float BmeTemperature = 0;           // BME280 temperature
+  float BmePressure = 0;              // BME280 pressure
+  float BmeHumidity = 0;              // BME280 humidity
 } Sample;
 
 // Code flags
@@ -196,6 +207,9 @@ WiFiUDP UDP;
 
 // NTP client
 NTPClient NTP(UDP, NTPServerURL);
+
+// BME280 - SPI mode
+Adafruit_BME280 Bme280 (PIN_BME_CS);
 
 /* ------------------------------------------------------------------------------------------- */
 // Name:        setup
@@ -688,6 +702,33 @@ void setup()
   #endif
 
   /* ----------------------------------------------------------------------------------------- */
+  // Init BME280
+  /* ----------------------------------------------------------------------------------------- */  
+
+  #if DEBUG_SERIAL
+  Serial.printf ("[%05d] Configuring BME280... \n", millis()); 
+  #endif
+
+  // Init BME
+  Sample.BmeStatus = Bme280.begin();
+
+  #if DEBUG_SERIAL
+  if (!Sample.BmeStatus)
+    Serial.printf ("[%05d] Could not find a valid BME280 sensor! \n", millis());
+  else
+  {
+    // Set BME280 sampling mode - Forced mode
+    Bme280.setSampling (Adafruit_BME280::MODE_FORCED,
+                    Adafruit_BME280::SAMPLING_X1, // temperature
+                    Adafruit_BME280::SAMPLING_X1, // pressure
+                    Adafruit_BME280::SAMPLING_X1, // humidity
+                    Adafruit_BME280::FILTER_OFF);
+
+    Serial.printf ("[%05d] Done. \n", millis());  
+  }
+  #endif
+
+  /* ----------------------------------------------------------------------------------------- */
   // Sample data
   /* ----------------------------------------------------------------------------------------- */ 
 
@@ -709,11 +750,26 @@ void setup()
   // Get DS172 temperature
   Sample.Temperature = TS.getTemperature();
 
+  // Get BME280 data
+  if (Sample.BmeStatus)
+  {
+    // Request sample
+    Bme280.takeForcedMeasurement();
+
+    // Read data
+    Sample.BmeTemperature = Bme280.readTemperature();
+    Sample.BmePressure = Bme280.readPressure() / 100.0F;
+    Sample.BmeHumidity = Bme280.readHumidity();
+  }
+
   #if DEBUG_SERIAL
   Serial.printf ("[%05d] Done. \n", millis());  
   Serial.printf ("[%05d] Epoch: %d (%s) \n", millis(), Sample.RTCEpoch, Sample.RTCValid ? "Reliable" : "Unreliable");  
   Serial.printf ("[%05d] Vbat: %.4f V \n", millis(), Sample.BatteryVoltage);
-  Serial.printf ("[%05d] Temperature: %.4f C \n", millis(), Sample.Temperature);    
+  Serial.printf ("[%05d] Temperature: %.4f C \n", millis(), Sample.Temperature);   
+  Serial.printf ("[%05d] BME280 Temperature: %.4f C \n", millis(), Sample.BmeTemperature); 
+  Serial.printf ("[%05d] BME280 Pressure: %.2f hPa \n", millis(), Sample.BmePressure); 
+  Serial.printf ("[%05d] BME280 Humidity: %.4f% \n", millis(), Sample.BmeHumidity);    
   #endif  
 
   /* ----------------------------------------------------------------------------------------- */
@@ -797,20 +853,21 @@ void setup()
     if (LogClient.begin (Settings.WifiRedirectURL))
     {
       // Define request timeout
-      LogClient.setTimeout(WIFI_TIMEOUT);
-  
-      // Define request content type - Required to perform posts
-      LogClient.addHeader("Content-Type", "application/x-www-form-urlencoded");
+      LogClient.setTimeout(4*WIFI_TIMEOUT);
   
       #if DEBUG_SERIAL
       Serial.printf ("[%05d] Done. \n", millis());
       #endif
   
       // Prepare log buffer
-      snprintf (Buffer, sizeof(Buffer), "host=%s&payload=%d;%d;%.4f;%.4f;%d;%d",
+      snprintf (Buffer, sizeof(Buffer), "host=%s&payload=%d;%d;%.4f;%.4f;%.4f;%.2f;%.4f;%d;%d",
                 Settings.WifiGScriptURL, Sample.RTCEpoch, Settings.LogTimezone, Sample.BatteryVoltage, 
-                Sample.Temperature, Sample.RTCValid, Flag.SDAvailable);
-  
+                Sample.Temperature, Sample.BmeTemperature, Sample.BmePressure, Sample.BmeHumidity, 
+                Sample.RTCValid, Flag.SDAvailable);
+
+      // Define request content type - Required to perform posts
+      LogClient.addHeader("Content-Type", "application/x-www-form-urlencoded");
+      
       #if DEBUG_SERIAL
       Serial.printf ("[%05d] Posting... \n", millis());
       #endif
@@ -882,12 +939,13 @@ void setup()
       // File is empty
       if(FileLog.size() == 0)
         // Write header
-        FileLog.println ("EP;TZ;VB;TS;ST;WF");              
+        FileLog.println ("EP;TZ;VB;TS;BT;BP;BH;ST;WF");              
       
       // Prepare log buffer
-      snprintf (Buffer, sizeof(Buffer), "%d;%d;%.4f;%.4f;%d;%d",
+      snprintf (Buffer, sizeof(Buffer), "%d;%d;%.4f;%.4f;%.4f;%.2f;%.4f;%d;%d",
                 Sample.RTCEpoch, Settings.LogTimezone, Sample.BatteryVoltage, 
-                Sample.Temperature, Sample.RTCValid, Flag.SaveWifiSuccess); 
+                Sample.Temperature, Sample.BmeTemperature, Sample.BmePressure, Sample.BmeHumidity,
+                Sample.RTCValid, Flag.SaveWifiSuccess); 
 
       // Write to file
       FileLog.println(Buffer);
@@ -945,7 +1003,7 @@ void setup()
 
   // Get flag from EEPROM
   Flag.PendingRTCUpdate = getRTCPending ();
-
+  
   // RTC data need to be updated
   if (Flag.PendingRTCUpdate)
   {
@@ -991,7 +1049,7 @@ void setup()
       #endif
     }
   }
-
+ 
   /* ----------------------------------------------------------------------------------------- */
   // Sync SD card content if necessary
   /* ----------------------------------------------------------------------------------------- */
@@ -1806,7 +1864,7 @@ bool syncLog ()
         if (LogClient.begin (Settings.WifiRedirectURL))
         {
           // Define request timeout
-          LogClient.setTimeout(WIFI_TIMEOUT);
+          LogClient.setTimeout(4*WIFI_TIMEOUT);
           
           // Define request content type - Required to perform posts
           LogClient.addHeader("Content-Type", "application/x-www-form-urlencoded");       
