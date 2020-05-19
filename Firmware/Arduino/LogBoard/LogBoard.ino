@@ -246,6 +246,12 @@ void setup()
   // Set Card Detect pin as input with pullup
   pinMode(PIN_SD_CD, INPUT_PULLUP);  
 
+  // Set BME280 CS pin as digital output - Pin must be high before SD init to avoid interference
+  pinMode(PIN_BME_CS, OUTPUT);
+
+  // BME280 off
+  digitalWrite (PIN_BME_CS, HIGH);
+
   #if DEBUG_SERIAL
   Serial.printf ("[%05d] Done. \n", millis());  
   #endif  
@@ -853,7 +859,7 @@ void setup()
     if (LogClient.begin (Settings.WifiRedirectURL))
     {
       // Define request timeout
-      LogClient.setTimeout(4*WIFI_TIMEOUT);
+      LogClient.setTimeout(5*WIFI_TIMEOUT);
   
       #if DEBUG_SERIAL
       Serial.printf ("[%05d] Done. \n", millis());
@@ -1864,7 +1870,7 @@ bool syncLog ()
         if (LogClient.begin (Settings.WifiRedirectURL))
         {
           // Define request timeout
-          LogClient.setTimeout(4*WIFI_TIMEOUT);
+          LogClient.setTimeout(5*WIFI_TIMEOUT);
           
           // Define request content type - Required to perform posts
           LogClient.addHeader("Content-Type", "application/x-www-form-urlencoded");       
