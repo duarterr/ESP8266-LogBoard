@@ -3,7 +3,7 @@
 // Version: 1.2
 // Author:  Renan R. Duarte
 // E-mail:  duarte.renan@hotmail.com
-// Date:    February 18, 2020
+// Date:    May 19, 2020
 //
 // Notes:   Sending data to Google Sheets (via Google Script) could be done directly using the
 //          WiFiClientSecure library. However, HTTPS requests require more heap memory than
@@ -13,7 +13,6 @@
 //
 // TODO: 	If log file is large, sync may take a lot of time. Must find a way to keep
 //          track of where to start the sync.
-//			  Include "device name" in config to use multiple devices with one online sheet
 //			
 //
 // Released into the public domain
@@ -137,6 +136,7 @@ struct StructSettings
 // Sampled data
 struct StructSample
 {
+  unsigned char DeviceMAC[6] = {};    // Device MAC address
   float Temperature = 0;              // DS1722 temperature
   float BatteryVoltage = 0;           // ADC voltage
   unsigned long RTCEpoch = 0;         // RTC date and time - Epoch format
@@ -169,7 +169,7 @@ struct StructTime
 } Time;
 
 // Log buffer
-char Buffer[200] = {0};
+char Buffer[256] = {0};
 
 // HTTP post response code
 short PostResponseCode = 0;
@@ -274,6 +274,19 @@ void setup()
   #if DEBUG_SERIAL
   Serial.printf ("[%05d] Done. \n", millis());  
   #endif     
+
+  /* ----------------------------------------------------------------------------------------- */
+  // Get ESP8266 MAC address
+  /* ----------------------------------------------------------------------------------------- */  
+
+  // Save device MAC
+  WiFi.macAddress(Sample.DeviceMAC);
+  
+  #if DEBUG_SERIAL
+  Serial.printf ("[%05d] Device MAC addess: %02X:%02X:%02X:%02X:%02X:%02X \n", millis(), 
+    Sample.DeviceMAC[5], Sample.DeviceMAC[4], Sample.DeviceMAC[3], 
+    Sample.DeviceMAC[2], Sample.DeviceMAC[1], Sample.DeviceMAC[0]); 
+  #endif  
   
   /* ----------------------------------------------------------------------------------------- */
   // Init EEPROM
@@ -864,10 +877,13 @@ void setup()
       #if DEBUG_SERIAL
       Serial.printf ("[%05d] Done. \n", millis());
       #endif
-  
+   
       // Prepare log buffer
-      snprintf (Buffer, sizeof(Buffer), "host=%s&payload=%d;%d;%.4f;%.4f;%.4f;%.2f;%.4f;%d;%d",
-                Settings.WifiGScriptURL, Sample.RTCEpoch, Settings.LogTimezone, Sample.BatteryVoltage, 
+      snprintf (Buffer, sizeof(Buffer), "host=%s&payload=%02X:%02X:%02X:%02X:%02X:%02X;%d;%d;%.4f;%.4f;%.4f;%.2f;%.4f;%d;%d",
+                Settings.WifiGScriptURL, 
+                Sample.DeviceMAC[5], Sample.DeviceMAC[4], Sample.DeviceMAC[3], 
+                Sample.DeviceMAC[2], Sample.DeviceMAC[1], Sample.DeviceMAC[0],
+                Sample.RTCEpoch, Settings.LogTimezone, Sample.BatteryVoltage, 
                 Sample.Temperature, Sample.BmeTemperature, Sample.BmePressure, Sample.BmeHumidity, 
                 Sample.RTCValid, Flag.SDAvailable);
 
@@ -945,10 +961,12 @@ void setup()
       // File is empty
       if(FileLog.size() == 0)
         // Write header
-        FileLog.println ("EP;TZ;VB;TS;BT;BP;BH;ST;WF");              
-      
+        FileLog.println ("MAC;EP;TZ;VB;TS;BT;BP;BH;ST;WF");              
+              
       // Prepare log buffer
-      snprintf (Buffer, sizeof(Buffer), "%d;%d;%.4f;%.4f;%.4f;%.2f;%.4f;%d;%d",
+      snprintf (Buffer, sizeof(Buffer), "%02X:%02X:%02X:%02X:%02X:%02X;%d;%d;%.4f;%.4f;%.4f;%.2f;%.4f;%d;%d",
+                Sample.DeviceMAC[5], Sample.DeviceMAC[4], Sample.DeviceMAC[3], 
+                Sample.DeviceMAC[2], Sample.DeviceMAC[1], Sample.DeviceMAC[0],
                 Sample.RTCEpoch, Settings.LogTimezone, Sample.BatteryVoltage, 
                 Sample.Temperature, Sample.BmeTemperature, Sample.BmePressure, Sample.BmeHumidity,
                 Sample.RTCValid, Flag.SaveWifiSuccess); 
@@ -1837,7 +1855,10 @@ void setSettingsEEPROM (StructSettings &Buffer)
 }
 
 /* ------------------------------------------------------------------------------------------- */
-// End of code
+// Name:        syncLog
+// Description: Syncs the SD card log via WiFi
+// Arguments:   None
+// Returns:     true on success or false otherwise
 /* ------------------------------------------------------------------------------------------- */
 
 bool syncLog ()
@@ -1934,3 +1955,7 @@ bool syncLog ()
     return false;
   }
 }
+
+/* ------------------------------------------------------------------------------------------- */
+// End of code.
+/* ------------------------------------------------------------------------------------------- */
